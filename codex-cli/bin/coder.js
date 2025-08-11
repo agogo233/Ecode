@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Unified entry point for the Code CLI (fork of OpenAI Codex).
+// Unified entry point for the Coder CLI (fork of OpenAI Codex).
 
 import path from "path";
 import { fileURLToPath } from "url";
@@ -56,7 +56,26 @@ if (!targetTriple) {
   throw new Error(`Unsupported platform: ${platform} (${arch})`);
 }
 
-const binaryPath = path.join(__dirname, "..", "bin", `code-${targetTriple}`);
+const binaryPath = path.join(__dirname, "..", "bin", `coder-${targetTriple}`);
+
+// Check if binary exists and try to fix permissions if needed
+import { existsSync, chmodSync } from "fs";
+if (existsSync(binaryPath)) {
+  try {
+    // Ensure binary is executable on Unix-like systems
+    if (platform !== "win32") {
+      chmodSync(binaryPath, 0o755);
+    }
+  } catch (e) {
+    // Ignore permission errors, will be caught below if it's a real problem
+  }
+} else {
+  console.error(`Binary not found: ${binaryPath}`);
+  console.error(`Please try reinstalling the package:`);
+  console.error(`  npm uninstall -g @just-every/coder`);
+  console.error(`  npm install -g @just-every/coder`);
+  process.exit(1);
+}
 
 // Use an asynchronous spawn instead of spawnSync so that Node is able to
 // respond to signals (e.g. Ctrl-C / SIGINT) while the native binary is
@@ -67,15 +86,18 @@ const { spawn } = await import("child_process");
 
 const child = spawn(binaryPath, process.argv.slice(2), {
   stdio: "inherit",
-  env: { ...process.env, CODE_MANAGED_BY_NPM: "1", CODEX_MANAGED_BY_NPM: "1" },
+  env: { ...process.env, CODER_MANAGED_BY_NPM: "1", CODEX_MANAGED_BY_NPM: "1" },
 });
 
 child.on("error", (err) => {
   // Typically triggered when the binary is missing or not executable.
-  // Re-throwing here will terminate the parent with a non-zero exit code
-  // while still printing a helpful stack trace.
-  // eslint-disable-next-line no-console
-  console.error(err);
+  if (err.code === 'EACCES') {
+    console.error(`Permission denied: ${binaryPath}`);
+    console.error(`Try running: chmod +x "${binaryPath}"`);
+    console.error(`Or reinstall the package with: npm install -g @just-every/coder`);
+  } else {
+    console.error(err);
+  }
   process.exit(1);
 });
 
