@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Unified entry point for the Code CLI (fork of OpenAI Codex).
+// Unified entry point for the Coder CLI (fork of OpenAI Codex).
 
 import path from "path";
 import { fileURLToPath } from "url";
@@ -56,7 +56,7 @@ if (!targetTriple) {
   throw new Error(`Unsupported platform: ${platform} (${arch})`);
 }
 
-const binaryPath = path.join(__dirname, "..", "bin", `code-${targetTriple}`);
+const binaryPath = path.join(__dirname, "..", "bin", `coder-${targetTriple}`);
 
 // Use an asynchronous spawn instead of spawnSync so that Node is able to
 // respond to signals (e.g. Ctrl-C / SIGINT) while the native binary is
@@ -67,7 +67,7 @@ const { spawn } = await import("child_process");
 
 const child = spawn(binaryPath, process.argv.slice(2), {
   stdio: "inherit",
-  env: { ...process.env, CODE_MANAGED_BY_NPM: "1", CODEX_MANAGED_BY_NPM: "1" },
+  env: { ...process.env, CODER_MANAGED_BY_NPM: "1", CODEX_MANAGED_BY_NPM: "1" },
 });
 
 child.on("error", (err) => {
