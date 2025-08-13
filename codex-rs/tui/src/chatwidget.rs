@@ -5,8 +5,6 @@ use std::sync::Mutex;
 
 use ratatui::style::Modifier;
 
-use codex_core::codex_wrapper::CodexConversation;
-use codex_core::codex_wrapper::init_codex;
 use codex_core::config::Config;
 use codex_core::config_types::ReasoningEffort;
 use codex_core::parse_command::ParsedCommand;
@@ -431,11 +429,11 @@ impl ChatWidget<'_> {
         // Create the Codex asynchronously so the UI loads as quickly as possible.
         let config_for_agent_loop = config.clone();
         tokio::spawn(async move {
-            let CodexConversation {
-                codex,
-                session_configured,
-                ..
-            } = match init_codex(config_for_agent_loop).await {
+            // Create Codex using the spawn method
+            let codex_spawn_result = match codex_core::Codex::spawn(
+                config_for_agent_loop,
+                None, // auth
+            ).await {
                 Ok(vals) => vals,
                 Err(e) => {
                     // TODO: surface this error to the user.
@@ -444,10 +442,7 @@ impl ChatWidget<'_> {
                 }
             };
 
-            // Forward the captured `SessionInitialized` event that was consumed
-            // inside `init_codex()` so it can be rendered in the UI.
-            app_event_tx_clone.send(AppEvent::CodexEvent(session_configured.clone()));
-            let codex = Arc::new(codex);
+            let codex = Arc::new(codex_spawn_result.codex);
             let codex_clone = codex.clone();
             tokio::spawn(async move {
                 while let Some(op) = codex_op_rx.recv().await {
@@ -1240,14 +1235,13 @@ impl ChatWidget<'_> {
             EventMsg::ExecApprovalRequest(ExecApprovalRequestEvent {
                 call_id: _,
                 command,
-                cwd,
+                cwd: _,
                 reason,
             }) => {
                 self.finalize_active_stream();
                 let request = ApprovalRequest::Exec {
                     id,
                     command,
-                    cwd,
                     reason,
                 };
                 self.bottom_pane.push_approval_request(request);
@@ -1508,6 +1502,9 @@ impl ChatWidget<'_> {
 
                 // Request a redraw to update the display immediately
                 self.app_event_tx.send(AppEvent::RequestRedraw);
+            }
+            EventMsg::AgentReasoningSectionBreak(_) => {
+                // Section break in reasoning - currently just ignored
             }
         }
     }
