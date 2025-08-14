@@ -31,6 +31,9 @@ use tracing::trace;
 use tracing::warn;
 use uuid::Uuid;
 
+/// Initial submission ID for session configuration
+pub(crate) const INITIAL_SUBMIT_ID: &str = "";
+
 /// Gather ephemeral, per-turn context that should not be persisted to history.
 /// Combines environment info and (when enabled) a live browser snapshot and status.
 struct EphemeralJar {
@@ -244,9 +247,9 @@ use crate::apply_patch::convert_apply_patch_to_protocol;
 use crate::apply_patch::get_writable_roots;
 use crate::apply_patch::{self};
 use crate::client::ModelClient;
-use crate::client_common::EnvironmentContext;
 use crate::client_common::Prompt;
 use crate::client_common::ResponseEvent;
+use crate::environment_context::EnvironmentContext;
 use crate::config::Config;
 use crate::config_types::ShellEnvironmentPolicy;
 use crate::conversation_history::ConversationHistory;
@@ -1823,11 +1826,11 @@ async fn run_turn(
             store: !sess.disable_response_storage,
             tools: tools.clone(),
             base_instructions_override: sess.base_instructions.clone(),
-            environment_context: Some(EnvironmentContext {
-                cwd: sess.cwd.clone(),
-                approval_policy: sess.approval_policy,
-                sandbox_policy: sess.sandbox_policy.clone(),
-            }),
+            environment_context: Some(EnvironmentContext::new(
+                sess.cwd.clone(),
+                sess.approval_policy,
+                sess.sandbox_policy.clone(),
+            )),
             status_items, // Include status items with this request
         };
 
