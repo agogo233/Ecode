@@ -16,6 +16,7 @@ use codex_core::protocol::AgentMessageDeltaEvent;
 use codex_core::protocol::AgentMessageEvent;
 use codex_core::protocol::AgentReasoningDeltaEvent;
 use codex_core::protocol::AgentReasoningEvent;
+use codex_core::protocol::AgentReasoningSectionBreakEvent;
 use codex_core::protocol::AgentReasoningRawContentDeltaEvent;
 use codex_core::protocol::AgentReasoningRawContentEvent;
 use codex_core::protocol::AgentStatusUpdateEvent;
@@ -62,14 +63,15 @@ use crate::bottom_pane::BottomPane;
 use crate::bottom_pane::BottomPaneParams;
 use crate::bottom_pane::CancellationEvent;
 use crate::bottom_pane::InputResult;
+use crate::history_cell;
 use crate::history_cell::CommandOutput;
+use crate::history_cell::ExecCell;
 use crate::history_cell::HistoryCell;
 use crate::history_cell::PatchEventType;
 use crate::live_wrap::RowBuilder;
-use crate::text_block::TextBlock;
 use crate::user_approval_widget::ApprovalRequest;
 use crate::streaming::controller::AppEventHistorySink;
-use tracing::debug;
+use crate::streaming::StreamKind;
 use codex_browser::BrowserManager;
 use codex_file_search::FileMatch;
 use ratatui::style::Stylize;
@@ -83,29 +85,22 @@ pub(crate) struct ChatWidget<'a> {
     app_event_tx: AppEventSender,
     codex_op_tx: UnboundedSender<Op>,
     bottom_pane: BottomPane<'a>,
-    active_history_cell: Option<HistoryCell>,
-    history_cells: Vec<HistoryCell>, // Store all history in memory
+    active_exec_cell: Option<ExecCell>,
+    history_cells: Vec<Box<dyn HistoryCell>>, // Store all history in memory
     config: Config,
     initial_user_message: Option<UserMessage>,
     total_token_usage: TokenUsage,
     last_token_usage: TokenUsage,
-    reasoning_buffer: String,
     content_buffer: String,
     // Buffer for streaming assistant answer text; we do not surface partial
     // We wait for the final AgentMessage event and then emit the full text
     // at once into scrollback so the history contains a single message.
-    answer_buffer: String,
     // Cache of the last finalized assistant message to suppress immediate duplicates
     last_assistant_message: Option<String>,
     // Track the ID of the current streaming message to prevent duplicates
-    current_stream_message_id: Option<String>,
     // Track the ID of the current streaming reasoning to prevent duplicates
-    current_stream_reasoning_id: Option<String>,
     running_commands: HashMap<String, RunningCommand>,
     live_builder: RowBuilder,
-    current_stream: Option<StreamKind>,
-    stream_header_emitted: bool,
-    live_max_rows: u16,
     // Store pending image paths keyed by their placeholder text
     pending_images: HashMap<String, PathBuf>,
     welcome_shown: bool,
@@ -162,12 +157,6 @@ enum AgentStatus {
     Failed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StreamKind {
-    Answer,
-    Reasoning,
-}
-
 impl From<String> for UserMessage {
     fn from(text: String) -> Self {
         Self {
@@ -193,6 +182,20 @@ impl ChatWidget<'_> {
             self.scroll_offset = 0;
         }
     }
+    
+    /// Handle streaming delta for both answer and reasoning
+    fn handle_streaming_delta(&mut self, kind: StreamKind, delta: String) {
+        let sink = AppEventHistorySink(self.app_event_tx.clone());
+        
+        // Begin stream if not already active
+        if !self.stream.is_write_cycle_active() {
+            self.stream.begin(kind, &sink);
+        }
+        
+        // Append delta to the stream
+        self.stream.push_and_maybe_commit(&delta, &sink);
+        self.mark_needs_redraw();
+    }
 
     /// Defer or handle an interrupt based on whether we're streaming
     fn defer_or_handle<F1, F2>(&mut self, defer_fn: F1, handle_fn: F2)
@@ -207,26 +210,7 @@ impl ChatWidget<'_> {
         }
     }
 
-    /// Flush answer stream with separator if needed
-    fn flush_answer_stream_with_separator(&mut self) {
-        // Implementation for flushing the answer stream
-        // This might involve adding a separator to the history or clearing buffers
-        if !self.answer_buffer.is_empty() {
-            // Add any buffered answer content to history before adding separator
-            self.flush_answer_buffer();
-        }
-    }
 
-    /// Flush the answer buffer to history
-    fn flush_answer_buffer(&mut self) {
-        if !self.answer_buffer.is_empty() {
-            let content = std::mem::take(&mut self.answer_buffer);
-            // Add the buffered content to history
-            self.add_to_history(HistoryCell::UserPrompt {
-                view: TextBlock::new(vec![Line::from(content)]),
-            });
-        }
-    }
 
     /// Mark that the widget needs to be redrawn
     fn mark_needs_redraw(&mut self) {
@@ -234,16 +218,9 @@ impl ChatWidget<'_> {
         self.app_event_tx.send(AppEvent::RequestRedraw);
     }
 
-    /// Handle when streaming is finished
-    fn handle_if_stream_finished(&mut self, finished: bool) {
-        if finished {
-            self.current_stream = None;
-            self.stream_header_emitted = false;
-        }
-    }
 
     /// Handle exec approval request immediately
-    pub(crate) fn handle_exec_approval_now(&mut self, id: String, ev: ExecApprovalRequestEvent) {
+    fn handle_exec_approval_now(&mut self, id: String, ev: ExecApprovalRequestEvent) {
         // Implementation for handling exec approval request
         self.bottom_pane.push_approval_request(ApprovalRequest::Exec {
             id,
@@ -253,19 +230,35 @@ impl ChatWidget<'_> {
     }
 
     /// Handle apply patch approval request immediately
-    pub(crate) fn handle_apply_patch_approval_now(&mut self, _id: String, ev: ApplyPatchApprovalRequestEvent) {
-        // Implementation for handling patch approval request
-        // Handle patch approval - need to check what fields are available
-        // For now, just log it
-        tracing::debug!("Patch approval request: {:?}", ev);
+    fn handle_apply_patch_approval_now(&mut self, id: String, ev: ApplyPatchApprovalRequestEvent) {
+        let ApplyPatchApprovalRequestEvent {
+            call_id: _,
+            changes,
+            reason,
+            grant_root,
+        } = ev;
+        
+        // Surface the patch summary in the main conversation
+        self.add_to_history(history_cell::new_patch_event(
+            history_cell::PatchEventType::ApprovalRequest,
+            changes,
+        ));
+        
+        // Push the approval request to the bottom pane
+        let request = ApprovalRequest::ApplyPatch {
+            id,
+            reason,
+            grant_root,
+        };
+        self.bottom_pane.push_approval_request(request);
     }
 
     /// Handle exec command begin immediately
-    pub(crate) fn handle_exec_begin_now(&mut self, ev: ExecCommandBeginEvent) {
+    fn handle_exec_begin_now(&mut self, ev: ExecCommandBeginEvent) {
         // Create a new exec cell for the command
         let parsed_command = ev.parsed_cmd.clone();
-        let cell = HistoryCell::new_active_exec_command(ev.command.clone(), parsed_command);
-        self.active_history_cell = Some(cell);
+        let cell = history_cell::new_active_exec_command(ev.command.clone(), parsed_command);
+        self.active_exec_cell = Some(cell);
         
         // Store in running commands
         self.running_commands.insert(ev.call_id.clone(), RunningCommand {
@@ -275,74 +268,76 @@ impl ChatWidget<'_> {
     }
 
     /// Handle exec command end immediately
-    pub(crate) fn handle_exec_end_now(&mut self, ev: ExecCommandEndEvent) {
-        // Remove from running commands
-        self.running_commands.remove(&ev.call_id);
+    fn handle_exec_end_now(&mut self, ev: ExecCommandEndEvent) {
+        let ExecCommandEndEvent {
+            call_id,
+            exit_code,
+            duration: _,
+            stdout,
+            stderr,
+        } = ev;
         
-        // Update the active exec cell if it exists
-        if let Some(HistoryCell::Exec(ref mut exec_cell)) = self.active_history_cell {
-            exec_cell.output = Some(CommandOutput {
-                stdout: ev.stdout.clone(),
-                stderr: ev.stderr.clone(),
-                exit_code: ev.exit_code,
-            });
-        }
+        // Get command info and remove from tracking
+        let cmd = self.running_commands.remove(&call_id);
+        self.active_exec_cell = None;
         
-        // Move active cell to history
-        if let Some(cell) = self.active_history_cell.take() {
-            self.add_to_history(cell);
-        }
+        // Get command and parsed info
+        let (command, parsed) = cmd
+            .map(|cmd| (cmd.command, cmd.parsed))
+            .unwrap_or_else(|| (vec![call_id], vec![]));
+        
+        // Add completed command to history
+        self.add_to_history(history_cell::new_completed_exec_command(
+            command,
+            parsed,
+            CommandOutput {
+                exit_code,
+                stdout,
+                stderr,
+            },
+        ));
     }
 
     /// Handle MCP tool call begin immediately
-    pub(crate) fn handle_mcp_begin_now(&mut self, ev: McpToolCallBeginEvent) {
-        // Create active MCP tool call
-        let view = TextBlock::new(vec![
-            Line::from(vec![
-                "🔧 ".cyan(),
-                format!("MCP: {}", ev.invocation.tool).into(),
-            ]),
-        ]);
-        self.active_history_cell = Some(HistoryCell::ActiveMcpToolCall { view });
+    fn handle_mcp_begin_now(&mut self, ev: McpToolCallBeginEvent) {
+        let McpToolCallBeginEvent {
+            call_id: _,
+            invocation,
+        } = ev;
+        
+        // Add active MCP tool call to history
+        self.add_to_history(history_cell::new_active_mcp_tool_call(invocation));
     }
 
     /// Handle MCP tool call end immediately
-    pub(crate) fn handle_mcp_end_now(&mut self, ev: McpToolCallEndEvent) {
-        // Convert active MCP to completed
-        if let Some(HistoryCell::ActiveMcpToolCall { .. }) = self.active_history_cell {
-            let result_text = if let Ok(result) = ev.result {
-                serde_json::to_string_pretty(&result).unwrap_or_else(|_| "{}".to_string())
-            } else {
-                "No result".to_string()
-            };
-            
-            let view = TextBlock::new(vec![
-                Line::from(vec![
-                    "✅ ".green(),
-                    format!("MCP: {}", ev.invocation.tool).into(),
-                ]),
-                Line::from(result_text),
-            ]);
-            
-            self.active_history_cell = Some(HistoryCell::CompletedMcpToolCall { view });
-        }
+    fn handle_mcp_end_now(&mut self, ev: McpToolCallEndEvent) {
+        let McpToolCallEndEvent {
+            call_id: _,
+            duration,
+            invocation,
+            result,
+        } = ev;
         
-        // Move to history
-        if let Some(cell) = self.active_history_cell.take() {
-            self.add_to_history(cell);
-        }
+        // Determine success from result
+        let success = !result.as_ref().map(|r| r.is_error.unwrap_or(false)).unwrap_or(false);
+        
+        // Add completed MCP tool call to history
+        self.add_to_history(history_cell::new_completed_mcp_tool_call(
+            80,  // TODO: Use actual terminal width
+            invocation,
+            duration,
+            success,
+            result,
+        ));
+        // MCP tool calls are added directly to history, no active cell to move
     }
 
     /// Handle patch apply end immediately
-    pub(crate) fn handle_patch_apply_end_now(&mut self, ev: PatchApplyEndEvent) {
-        // Add patch result to history
-        let view = if ev.success {
-            TextBlock::new(vec![Line::from("✅ Patch applied successfully".green())])
-        } else {
-            TextBlock::new(vec![Line::from(format!("❌ Patch failed: stderr: {}", ev.stderr).red())])
-        };
-        
-        self.add_to_history(HistoryCell::PatchApplyResult { view });
+    fn handle_patch_apply_end_now(&mut self, ev: PatchApplyEndEvent) {
+        // Only add failure to history (success is already tracked)
+        if !ev.success {
+            self.add_to_history(history_cell::new_patch_apply_failure(ev.stderr));
+        }
     }
 
     /// Get or create the global browser manager
@@ -432,90 +427,13 @@ impl ChatWidget<'_> {
         }
     }
 
-    fn on_apply_patch_approval_request(&mut self, id: String, ev: ApplyPatchApprovalRequestEvent) {
-        let id2 = id.clone();
-        let ev2 = ev.clone();
-        self.defer_or_handle(
-            |q| q.push_apply_patch_approval(id, ev),
-            |s| s.handle_apply_patch_approval_now(id2, ev2),
-        );
-    }
-
-    fn on_exec_command_begin(&mut self, ev: ExecCommandBeginEvent) {
-        self.flush_answer_stream_with_separator();
-        let ev2 = ev.clone();
-        self.defer_or_handle(|q| q.push_exec_begin(ev), |s| s.handle_exec_begin_now(ev2));
-    }
-
-    fn on_exec_command_output_delta(
-        &mut self,
-        _ev: codex_core::protocol::ExecCommandOutputDeltaEvent,
-    ) {
-        // TODO: Handle streaming exec output if/when implemented
-    }
-
-    fn on_patch_apply_begin(&mut self, event: PatchApplyBeginEvent) {
-        self.add_to_history(HistoryCell::new_patch_event(
-            PatchEventType::ApplyBegin {
-                auto_approved: event.auto_approved,
-            },
-            event.changes,
-        ));
-    }
-
-    fn on_patch_apply_end(&mut self, event: codex_core::protocol::PatchApplyEndEvent) {
-        let ev2 = event.clone();
-        self.defer_or_handle(
-            |q| q.push_patch_end(event),
-            |s| s.handle_patch_apply_end_now(ev2),
-        );
-    }
-
-    fn on_exec_command_end(&mut self, ev: ExecCommandEndEvent) {
-        let ev2 = ev.clone();
-        self.defer_or_handle(|q| q.push_exec_end(ev), |s| s.handle_exec_end_now(ev2));
-    }
-
-    fn on_mcp_tool_call_begin(&mut self, ev: McpToolCallBeginEvent) {
-        let ev2 = ev.clone();
-        self.defer_or_handle(|q| q.push_mcp_begin(ev), |s| s.handle_mcp_begin_now(ev2));
-    }
-
-    fn on_mcp_tool_call_end(&mut self, ev: McpToolCallEndEvent) {
-        let ev2 = ev.clone();
-        self.defer_or_handle(|q| q.push_mcp_end(ev), |s| s.handle_mcp_end_now(ev2));
-    }
-
-    fn on_get_history_entry_response(
-        &mut self,
-        event: codex_core::protocol::GetHistoryEntryResponseEvent,
-    ) {
-        let codex_core::protocol::GetHistoryEntryResponseEvent {
-            offset,
-            log_id,
-            entry,
-        } = event;
-        self.bottom_pane
-            .on_history_entry_response(log_id, offset, entry.map(|e| e.text));
-    }
-
-    fn on_shutdown_complete(&mut self) {
-        self.app_event_tx.send(AppEvent::ExitRequest);
-    }
-
-    fn on_turn_diff(&mut self, unified_diff: String) {
-        debug!("TurnDiffEvent: {unified_diff}");
-    }
-
-    fn on_background_event(&mut self, message: String) {
-        debug!("BackgroundEvent: {message}");
-    }
     /// Periodic tick to commit at most one queued line to history with a small delay,
     /// animating the output.
+    #[cfg(test)]
     pub(crate) fn on_commit_tick(&mut self) {
         let sink = AppEventHistorySink(self.app_event_tx.clone());
-        let finished = self.stream.on_commit_tick(&sink);
-        self.handle_if_stream_finished(finished);
+        let _finished = self.stream.on_commit_tick(&sink);
+        // Stream finishing is handled by StreamController
     }
     fn is_write_cycle_active(&self) -> bool {
         self.stream.is_write_cycle_active()
@@ -527,31 +445,17 @@ impl ChatWidget<'_> {
         self.interrupts = mgr;
     }
 
-    fn on_token_count(&mut self, token_usage: TokenUsage) {
-        self.total_token_usage = add_token_usage(&self.total_token_usage, &token_usage);
-        self.last_token_usage = token_usage;
-        self.bottom_pane.set_token_usage(
-            self.total_token_usage.clone(),
-            self.last_token_usage.clone(),
-            self.config.model_context_window,
-        );
-    }
-
     fn on_error(&mut self, message: String) {
-        self.add_to_history(HistoryCell::new_error_event(message));
+        self.add_to_history(history_cell::new_error_event(message));
         self.bottom_pane.set_task_running(false);
         self.running_commands.clear();
         self.stream.clear_all();
         self.mark_needs_redraw();
     }
 
-    fn on_plan_update(&mut self, update: codex_core::plan_tool::UpdatePlanArgs) {
-        self.add_to_history(HistoryCell::new_plan_update(update));
-    }
-
     fn interrupt_running_task(&mut self) {
         if self.bottom_pane.is_task_running() {
-            self.active_history_cell = None;
+            self.active_exec_cell = None;
             self.running_commands.clear();
             self.bottom_pane.clear_ctrl_c_quit_hint();
             self.submit_op(Op::Interrupt);
@@ -559,10 +463,7 @@ impl ChatWidget<'_> {
             self.bottom_pane.clear_live_ring();
             // Reset with max width to disable wrapping
             self.live_builder = RowBuilder::new(usize::MAX);
-            self.current_stream = None;
-            self.stream_header_emitted = false;
-            self.answer_buffer.clear();
-            self.reasoning_buffer.clear();
+            // Stream state is now managed by StreamController
             self.content_buffer.clear();
             self.request_redraw();
         }
@@ -637,60 +538,12 @@ impl ChatWidget<'_> {
             .to_vec()
         }
     }
-    fn emit_stream_header(&mut self, kind: StreamKind) {
-        use ratatui::text::Line as RLine;
-        if self.stream_header_emitted {
-            return;
-        }
-        match kind {
-            StreamKind::Reasoning => {
-                self.stream_header_emitted = true;
-                self.request_redraw();
-            }
-            StreamKind::Answer => {
-                // Add space above GPT-5 header only if the last item isn't already a blank line
-                let _needs_space = if self.history_cells.is_empty() {
-                    false
-                } else {
-                    // Check if the last item is a blank line (from any cell type that could be empty)
-                    match self.history_cells.last() {
-                        Some(HistoryCell::BackgroundEvent { view })
-                        | Some(HistoryCell::StyledText { view })
-                        | Some(HistoryCell::DimmedReasoning { view })
-                            if view.lines.len() == 1 =>
-                        {
-                            // Check if it's an empty line
-                            let line = &view.lines[0];
-                            let is_empty = line.spans.is_empty()
-                                || (line.spans.len() == 1 && line.spans[0].content.is_empty());
-                            !is_empty // Need space if the line is NOT empty
-                        }
-                        _ => true, // Always need space for other cell types
-                    }
-                };
-                
-                // Add GPT-5 header with secondary color
-                let formatted_model = self.format_model_name(&self.config.model);
-                use ratatui::style::Modifier;
-                use ratatui::style::Style;
-                use ratatui::text::Span;
-                self.add_to_history(HistoryCell::new_styled_text_line(RLine::from(
-                    Span::styled(
-                        formatted_model,
-                        Style::default()
-                            .fg(crate::colors::secondary())
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                )));
-
-                self.stream_header_emitted = true;
-                self.request_redraw();
-            }
-        }
-    }
     fn finalize_active_stream(&mut self) {
-        if let Some(kind) = self.current_stream {
-            self.finalize_stream(kind);
+        let sink = AppEventHistorySink(self.app_event_tx.clone());
+        // Finalize both reasoning and answer streams if active
+        if self.stream.is_write_cycle_active() {
+            self.stream.finalize(StreamKind::Reasoning, true, &sink);
+            self.stream.finalize(StreamKind::Answer, true, &sink);
         }
     }
     pub(crate) fn new(
@@ -748,13 +601,8 @@ impl ChatWidget<'_> {
         // The core session will use the same global manager when browser tools are invoked
 
         // Add initial animated welcome message to history
-        let mut history_cells = Vec::new();
-        history_cells.push(HistoryCell::AnimatedWelcome {
-            start_time: std::time::Instant::now(),
-            completed: std::cell::Cell::new(false),
-            fade_start: std::cell::Cell::new(None),
-            faded_out: std::cell::Cell::new(false),
-        });
+        let mut history_cells: Vec<Box<dyn HistoryCell>> = Vec::new();
+        history_cells.push(Box::new(history_cell::new_animated_welcome()));
 
         // Initialize image protocol for rendering screenshots
 
@@ -767,7 +615,7 @@ impl ChatWidget<'_> {
                 enhanced_keys_supported,
                 using_chatgpt_auth: config.using_chatgpt_auth,
             }),
-            active_history_cell: None,
+            active_exec_cell: None,
             history_cells,
             config: config.clone(),
             initial_user_message: create_initial_user_message(
@@ -776,19 +624,12 @@ impl ChatWidget<'_> {
             ),
             total_token_usage: TokenUsage::default(),
             last_token_usage: TokenUsage::default(),
-            reasoning_buffer: String::new(),
             content_buffer: String::new(),
-            answer_buffer: String::new(),
             last_assistant_message: None,
-            current_stream_message_id: None,
-            current_stream_reasoning_id: None,
             running_commands: HashMap::new(),
             // Use max width to disable wrapping during streaming
             // Text will be properly wrapped when displayed based on terminal width
             live_builder: RowBuilder::new(usize::MAX),
-            current_stream: None,
-            stream_header_emitted: false,
-            live_max_rows: 3,
             pending_images: HashMap::new(),
             welcome_shown: false,
             latest_browser_screenshot: Arc::new(Mutex::new(None)),
@@ -831,7 +672,7 @@ impl ChatWidget<'_> {
             total_height = total_height.saturating_add(h);
         }
 
-        if let Some(ref cell) = self.active_history_cell {
+        if let Some(ref cell) = self.active_exec_cell {
             let h = cell.desired_height(80);
             total_height = total_height.saturating_add(h);
         }
@@ -960,48 +801,19 @@ impl ChatWidget<'_> {
         self.bottom_pane.handle_paste(text);
     }
 
-    fn add_to_history(&mut self, cell: HistoryCell) {
-        // Check for duplicate text lines to prevent adding the same content twice
-        if let Some(last_cell) = self.history_cells.last() {
-            // If both are text lines with identical content, skip adding the duplicate
-            if let (
-                HistoryCell::StyledText { view: last_view },
-                HistoryCell::StyledText { view: new_view },
-            ) = (last_cell, &cell)
-            {
-                if last_view.lines == new_view.lines {
-                    return; // Skip duplicate
-                }
-            }
-        }
+    fn add_to_history(&mut self, cell: impl HistoryCell + 'static) {
+        // Note: We diverge from upstream here - upstream takes &dyn HistoryCell
+        // and sends display_lines() through events. We store the actual cells
+        // for our terminal rendering and theming system.
 
-        // If this is the first user prompt, start fade-out animation for AnimatedWelcome
-        if matches!(cell, HistoryCell::UserPrompt { .. }) {
-            let has_existing_user_prompts = self
-                .history_cells
-                .iter()
-                .any(|cell| matches!(cell, HistoryCell::UserPrompt { .. }));
-
-            if !has_existing_user_prompts {
-                // This is the first user prompt - start fade-out
-                for history_cell in &mut self.history_cells {
-                    if let HistoryCell::AnimatedWelcome { fade_start, .. } = history_cell {
-                        fade_start.set(Some(std::time::Instant::now()));
-                    }
-                }
-            }
-        }
-
-        // Store in memory instead of sending to scrollback
-        self.history_cells.push(cell);
+        // Store in memory for local rendering
+        self.history_cells.push(Box::new(cell));
         // Auto-follow if we're at or near the bottom (preserve position if scrolled up)
         self.autoscroll_if_near_bottom();
         // If user has scrolled up (scroll_offset > 0), don't change their position
-        // Check if there's actual conversation history (any user prompts submitted)
-        let has_conversation = self
-            .history_cells
-            .iter()
-            .any(|cell| matches!(cell, HistoryCell::UserPrompt { .. }));
+        // Check if there's actual conversation history
+        // With trait-based cells, we consider any non-empty history as conversation
+        let has_conversation = !self.history_cells.is_empty();
         self.bottom_pane.set_has_chat_history(has_conversation);
         // Ensure input focus is maintained when new content arrives
         self.bottom_pane.ensure_input_focus();
@@ -1013,13 +825,8 @@ impl ChatWidget<'_> {
 
     /// Clean up faded-out animation cells
     fn process_animation_cleanup(&mut self) {
-        self.history_cells.retain(|cell| {
-            if let HistoryCell::AnimatedWelcome { faded_out, .. } = cell {
-                !faded_out.get()
-            } else {
-                true
-            }
-        });
+        // With trait-based cells, we can't easily detect and clean up specific cell types
+        // Animation cleanup is now handled differently
     }
 
     fn submit_user_message(&mut self, user_message: UserMessage) {
@@ -1053,7 +860,7 @@ impl ChatWidget<'_> {
             }
             crate::slash_command::ProcessedCommand::Error(error_msg) => {
                 // Show error in history
-                self.add_to_history(HistoryCell::new_error_event(error_msg));
+                self.add_to_history(history_cell::new_error_event(error_msg));
                 return;
             }
             crate::slash_command::ProcessedCommand::NotCommand(_) => {
@@ -1261,7 +1068,7 @@ impl ChatWidget<'_> {
         }
 
         if !original_text.is_empty() {
-            self.add_to_history(HistoryCell::new_user_prompt(original_text.clone()));
+            self.add_to_history(history_cell::new_user_prompt(original_text.clone()));
         }
     }
 
@@ -1323,7 +1130,7 @@ impl ChatWidget<'_> {
                 if is_first {
                     self.welcome_shown = true;
                 }
-                self.add_to_history(HistoryCell::new_session_info(&self.config, event, is_first));
+                self.add_to_history(history_cell::new_session_info(&self.config, event, is_first));
 
                 if let Some(user_message) = self.initial_user_message.take() {
                     // If the user provided an initial message, add it to the
@@ -1334,215 +1141,66 @@ impl ChatWidget<'_> {
                 self.request_redraw();
             }
             EventMsg::AgentMessage(AgentMessageEvent { message }) => {
-                // Check if this is the final message for a stream we've been processing
-                if let Some(stream_id) = &self.current_stream_message_id {
-                    if stream_id == &id {
-                        // This is the final message for the current stream
-                        // Just finalize without adding duplicate content
-                        if self.current_stream == Some(StreamKind::Answer) {
-                            self.finalize_stream(StreamKind::Answer);
-                            self.last_assistant_message = Some(message.clone());
-                            self.answer_buffer.clear();
-                            self.current_stream_message_id = None;
-                        }
-                        self.request_redraw();
-                        return;
-                    }
-                }
-
-                // Fallback: Check if we've already processed this message (duplicate detection)
-                let message_trimmed = message.trim();
-                if !message_trimmed.is_empty() {
-                    if let Some(prev) = &self.last_assistant_message {
-                        if prev.trim() == message_trimmed {
-                            // Already processed this exact message, skip it
-                            self.request_redraw();
-                            return;
-                        }
-                    }
-
-                    // Also check against the current answer_buffer
-                    if !self.answer_buffer.is_empty()
-                        && self.answer_buffer.trim() == message_trimmed
-                    {
-                        // We've already streamed this content via deltas
-                        // Just finalize the stream without adding duplicate content
-                        if self.current_stream == Some(StreamKind::Answer) {
-                            self.finalize_stream(StreamKind::Answer);
-                            self.last_assistant_message = Some(message.clone());
-                            self.answer_buffer.clear();
-                            self.current_stream_message_id = None;
-                        }
-                        self.request_redraw();
-                        return;
-                    }
-                }
-
-                // AgentMessage: if no deltas were streamed, render the final text once.
-                if self.current_stream != Some(StreamKind::Answer) && !message.is_empty() {
-                    self.begin_stream(StreamKind::Answer);
-                    self.stream_push_and_maybe_commit(&message);
-                    self.last_assistant_message = Some(message.clone());
-                }
-                // Only finalize if we actually had a stream
-                if self.current_stream == Some(StreamKind::Answer) {
-                    self.finalize_stream(StreamKind::Answer);
-                    // Update cache after finalization
-                    if !message.is_empty() {
-                        self.last_assistant_message = Some(message.clone());
-                    }
-                    self.answer_buffer.clear();
-                    self.current_stream_message_id = None;
-                }
-                self.request_redraw();
+                // Use StreamController for final answer
+                let sink = AppEventHistorySink(self.app_event_tx.clone());
+                let _finished = self.stream.apply_final_answer(&message, &sink);
+                // Stream finishing is handled by StreamController
+                self.last_assistant_message = Some(message);
+                self.mark_needs_redraw();
             }
             EventMsg::AgentMessageDelta(AgentMessageDeltaEvent { delta }) => {
-                self.begin_stream(StreamKind::Answer);
-                // Track the message ID for this stream
-                self.current_stream_message_id = Some(id.clone());
-                // Update status to show we're generating a response
-                if self.bottom_pane.is_task_running() {
-                    self.bottom_pane
-                        .update_status_text("responding".to_string());
-                }
-                self.answer_buffer.push_str(&delta);
-                self.stream_push_and_maybe_commit(&delta);
-                self.request_redraw();
-            }
-            EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent { delta }) => {
-                // Stream CoT into the live pane; keep input visible and commit
-                // overflow rows incrementally to scrollback.
-                self.begin_stream(StreamKind::Reasoning);
-                // Track the reasoning ID for this stream
-                self.current_stream_reasoning_id = Some(id.clone());
-                // Update status to show we're thinking/reasoning
-                if self.bottom_pane.is_task_running() {
-                    self.bottom_pane.update_status_text("reasoning".to_string());
-                }
-                self.reasoning_buffer.push_str(&delta);
-                self.stream_push_and_maybe_commit(&delta);
-                self.request_redraw();
+                // Stream answer delta through StreamController
+                self.handle_streaming_delta(StreamKind::Answer, delta);
             }
             EventMsg::AgentReasoning(AgentReasoningEvent { text }) => {
-                // Check if this is the final message for a stream we've been processing
-                if let Some(stream_id) = &self.current_stream_reasoning_id {
-                    if stream_id == &id {
-                        // This is the final message for the current stream
-                        // Just finalize without adding duplicate content
-                        if self.current_stream == Some(StreamKind::Reasoning) {
-                            self.finalize_stream(StreamKind::Reasoning);
-                            self.reasoning_buffer.clear();
-                            self.current_stream_reasoning_id = None;
-                        }
-                        self.request_redraw();
-                        return;
-                    }
+                // Use StreamController for final reasoning
+                let sink = AppEventHistorySink(self.app_event_tx.clone());
+                let _finished = self.stream.apply_final_reasoning(&text, &sink);
+                // Stream finishing is handled by StreamController
+                self.mark_needs_redraw();
+            }
+            EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent { delta }) => {
+                // Stream reasoning delta through StreamController
+                self.handle_streaming_delta(StreamKind::Reasoning, delta);
+            }
+            EventMsg::AgentReasoningSectionBreak(AgentReasoningSectionBreakEvent {}) => {
+                // Insert section break in reasoning stream
+                let sink = AppEventHistorySink(self.app_event_tx.clone());
+                self.stream.insert_reasoning_section_break(&sink);
+            }
+            EventMsg::TaskStarted => {
+                // Reset stream headers for new turn
+                self.stream.reset_headers_for_new_turn();
+                self.bottom_pane.clear_ctrl_c_quit_hint();
+                self.bottom_pane.set_task_running(true);
+                self.bottom_pane.update_status_text("waiting for model".to_string());
+                self.mark_needs_redraw();
+            }
+            EventMsg::TaskComplete(TaskCompleteEvent { last_agent_message: _ }) => {
+                // Finalize any active streams
+                let sink = AppEventHistorySink(self.app_event_tx.clone());
+                if self.stream.is_write_cycle_active() {
+                    // Finalize both streams
+                    self.stream.finalize(StreamKind::Reasoning, true, &sink);
+                    self.stream.finalize(StreamKind::Answer, true, &sink);
                 }
-
-                // Fallback: Check if we've already streamed this content via deltas
-                let text_trimmed = text.trim();
-                if !self.reasoning_buffer.is_empty() && self.reasoning_buffer.trim() == text_trimmed
-                {
-                    // We've already streamed this content via deltas
-                    // Just finalize the stream without adding duplicate content
-                    if self.current_stream == Some(StreamKind::Reasoning) {
-                        self.finalize_stream(StreamKind::Reasoning);
-                        self.reasoning_buffer.clear();
-                        self.current_stream_reasoning_id = None;
-                    }
-                    self.request_redraw();
-                    return;
-                }
-
-                // Final reasoning: if no deltas were streamed, render the final text.
-                if self.current_stream != Some(StreamKind::Reasoning) && !text.is_empty() {
-                    self.begin_stream(StreamKind::Reasoning);
-                    self.stream_push_and_maybe_commit(&text);
-                }
-                // Only finalize if we actually had a stream
-                if self.current_stream == Some(StreamKind::Reasoning) {
-                    self.finalize_stream(StreamKind::Reasoning);
-                    self.reasoning_buffer.clear();
-                    self.current_stream_reasoning_id = None;
-                }
-                self.request_redraw();
+                // Now that streaming is complete, flush any queued interrupts
+                self.flush_interrupt_queue();
+                self.bottom_pane.set_task_running(false);
+                self.mark_needs_redraw();
             }
             EventMsg::AgentReasoningRawContentDelta(AgentReasoningRawContentDeltaEvent {
                 delta,
             }) => {
-                // Treat raw reasoning content the same as summarized reasoning for UI flow.
-                self.begin_stream(StreamKind::Reasoning);
-                // Track the reasoning ID for this stream
-                self.current_stream_reasoning_id = Some(id.clone());
-                // Update status to show we're thinking/reasoning
-                if self.bottom_pane.is_task_running() {
-                    self.bottom_pane.update_status_text("reasoning".to_string());
-                }
-                self.reasoning_buffer.push_str(&delta);
-                self.stream_push_and_maybe_commit(&delta);
-                self.request_redraw();
+                // Treat raw reasoning content the same as summarized reasoning
+                self.handle_streaming_delta(StreamKind::Reasoning, delta);
             }
             EventMsg::AgentReasoningRawContent(AgentReasoningRawContentEvent { text }) => {
-                // Check if this is the final message for a stream we've been processing
-                if let Some(stream_id) = &self.current_stream_reasoning_id {
-                    if stream_id == &id {
-                        // This is the final message for the current stream
-                        // Just finalize without adding duplicate content
-                        if self.current_stream == Some(StreamKind::Reasoning) {
-                            self.finalize_stream(StreamKind::Reasoning);
-                            self.reasoning_buffer.clear();
-                            self.current_stream_reasoning_id = None;
-                        }
-                        self.request_redraw();
-                        return;
-                    }
-                }
-
-                // Fallback: Check if we've already streamed this content via deltas
-                let text_trimmed = text.trim();
-                if !self.reasoning_buffer.is_empty() && self.reasoning_buffer.trim() == text_trimmed
-                {
-                    // We've already streamed this content via deltas
-                    // Just finalize the stream without adding duplicate content
-                    if self.current_stream == Some(StreamKind::Reasoning) {
-                        self.finalize_stream(StreamKind::Reasoning);
-                        self.reasoning_buffer.clear();
-                        self.current_stream_reasoning_id = None;
-                    }
-                    self.request_redraw();
-                    return;
-                }
-
-                // Final raw reasoning: if no deltas were streamed, render the final text.
-                if self.current_stream != Some(StreamKind::Reasoning) && !text.is_empty() {
-                    self.begin_stream(StreamKind::Reasoning);
-                    self.stream_push_and_maybe_commit(&text);
-                }
-                // Only finalize if we actually had a stream
-                if self.current_stream == Some(StreamKind::Reasoning) {
-                    self.finalize_stream(StreamKind::Reasoning);
-                    self.reasoning_buffer.clear();
-                    self.current_stream_reasoning_id = None;
-                }
-                self.request_redraw();
-            }
-            EventMsg::TaskStarted => {
-                self.bottom_pane.clear_ctrl_c_quit_hint();
-                self.bottom_pane.set_task_running(true);
-                // Replace composer with single-line spinner while waiting.
-                self.bottom_pane
-                    .update_status_text("waiting for model".to_string());
-                self.request_redraw();
-            }
-            EventMsg::TaskComplete(TaskCompleteEvent {
-                last_agent_message: _,
-            }) => {
-                self.bottom_pane.set_task_running(false);
-                self.bottom_pane.clear_live_ring();
-                // Reset stream state for next conversation
-                self.current_stream = None;
-                self.stream_header_emitted = false;
-                self.request_redraw();
+                // Use StreamController for final raw reasoning
+                let sink = AppEventHistorySink(self.app_event_tx.clone());
+                let _finished = self.stream.apply_final_reasoning(&text, &sink);
+                // Stream finishing is handled by StreamController
+                self.mark_needs_redraw();
             }
             EventMsg::TokenCount(token_usage) => {
                 self.total_token_usage = add_token_usage(&self.total_token_usage, &token_usage);
@@ -1554,87 +1212,48 @@ impl ChatWidget<'_> {
                 );
             }
             EventMsg::Error(ErrorEvent { message }) => {
-                self.add_to_history(HistoryCell::new_error_event(message.clone()));
-                self.bottom_pane.set_task_running(false);
-                self.bottom_pane.clear_live_ring();
-                // Reset with max width to disable wrapping
-                self.live_builder = RowBuilder::new(usize::MAX);
-                self.current_stream = None;
-                self.stream_header_emitted = false;
-                self.answer_buffer.clear();
-                self.reasoning_buffer.clear();
-                self.content_buffer.clear();
-                self.request_redraw();
+                self.on_error(message);
             }
             EventMsg::PlanUpdate(update) => {
                 // Commit plan updates directly to history (no status-line preview).
-                self.add_to_history(HistoryCell::new_plan_update(update));
+                self.add_to_history(history_cell::new_plan_update(update));
             }
-            EventMsg::ExecApprovalRequest(ExecApprovalRequestEvent {
-                call_id: _,
-                command,
-                cwd: _,
-                reason,
-            }) => {
-                self.finalize_active_stream();
-                let request = ApprovalRequest::Exec {
-                    id,
-                    command,
-                    reason,
-                };
-                self.bottom_pane.push_approval_request(request);
-                self.request_redraw();
-            }
-            EventMsg::ApplyPatchApprovalRequest(ApplyPatchApprovalRequestEvent {
-                call_id: _,
-                changes,
-                reason,
-                grant_root,
-            }) => {
-                self.finalize_active_stream();
-                // ------------------------------------------------------------------
-                // Before we even prompt the user for approval we surface the patch
-                // summary in the main conversation so that the dialog appears in a
-                // sensible chronological order:
-                //   (1) codex → proposes patch (HistoryCell::PendingPatch)
-                //   (2) UI → asks for approval (BottomPane)
-                // This mirrors how command execution is shown (command begins →
-                // approval dialog) and avoids surprising the user with a modal
-                // prompt before they have seen *what* is being requested.
-                // ------------------------------------------------------------------
-                self.add_to_history(HistoryCell::new_patch_event(
-                    PatchEventType::ApprovalRequest,
-                    changes,
-                ));
-
-                // Now surface the approval request in the BottomPane as before.
-                let request = ApprovalRequest::ApplyPatch {
-                    id,
-                    reason,
-                    grant_root,
-                };
-                self.bottom_pane.push_approval_request(request);
-                self.request_redraw();
-            }
-            EventMsg::ExecCommandBegin(ExecCommandBeginEvent {
-                call_id,
-                command,
-                cwd: _,
-                parsed_cmd,
-            }) => {
-                self.finalize_active_stream();
-                // Ensure the status indicator is visible while the command runs.
-                self.bottom_pane
-                    .update_status_text("running command".to_string());
-                self.running_commands.insert(
-                    call_id,
-                    RunningCommand {
-                        command: command.clone(),
-                        parsed: parsed_cmd.clone(),
+            EventMsg::ExecApprovalRequest(ev) => {
+                let id2 = id.clone();
+                let ev2 = ev.clone();
+                self.defer_or_handle(
+                    |interrupts| interrupts.push_exec_approval(id, ev),
+                    |this| {
+                        this.finalize_active_stream();
+                        this.flush_interrupt_queue();
+                        this.handle_exec_approval_now(id2, ev2);
+                        this.request_redraw();
                     },
                 );
-                self.active_history_cell =
-                    Some(HistoryCell::new_active_exec_command(command, parsed_cmd));
+            }
+            EventMsg::ApplyPatchApprovalRequest(ev) => {
+                let id2 = id.clone();
+                let ev2 = ev.clone();
+                self.defer_or_handle(
+                    |interrupts| interrupts.push_apply_patch_approval(id, ev),
+                    |this| {
+                        this.finalize_active_stream();
+                        this.flush_interrupt_queue();
+                        this.handle_apply_patch_approval_now(id2, ev2);
+                        this.request_redraw();
+                    },
+                );
+            }
+            EventMsg::ExecCommandBegin(ev) => {
+                let ev2 = ev.clone();
+                self.defer_or_handle(
+                    |interrupts| interrupts.push_exec_begin(ev),
+                    |this| {
+                        this.finalize_active_stream();
+                        this.flush_interrupt_queue();
+                        this.handle_exec_begin_now(ev2);
+                    },
+                );
             }
             EventMsg::ExecCommandOutputDelta(_) => {
                 // TODO
@@ -1644,62 +1263,42 @@ impl ChatWidget<'_> {
                 auto_approved,
                 changes,
             }) => {
-                self.add_to_history(HistoryCell::new_patch_event(
+                self.add_to_history(history_cell::new_patch_event(
                     PatchEventType::ApplyBegin { auto_approved },
                     changes,
                 ));
             }
-            EventMsg::PatchApplyEnd(event) => {
-                if !event.success {
-                    self.add_to_history(HistoryCell::new_patch_apply_failure(event.stderr));
-                }
+            EventMsg::PatchApplyEnd(ev) => {
+                let ev2 = ev.clone();
+                self.defer_or_handle(
+                    |interrupts| interrupts.push_patch_end(ev),
+                    |this| this.handle_patch_apply_end_now(ev2),
+                );
             }
-            EventMsg::ExecCommandEnd(ExecCommandEndEvent {
-                call_id,
-                exit_code,
-                duration: _,
-                stdout,
-                stderr,
-            }) => {
-                // Compute summary before moving stdout into the history cell.
-                let cmd = self.running_commands.remove(&call_id);
-                self.active_history_cell = None;
-                let (command, parsed) = cmd
-                    .map(|cmd| (cmd.command, cmd.parsed))
-                    .unwrap_or_else(|| (vec![call_id], vec![]));
-                self.add_to_history(HistoryCell::new_completed_exec_command(
-                    command,
-                    parsed,
-                    CommandOutput {
-                        exit_code,
-                        stdout,
-                        stderr,
+            EventMsg::ExecCommandEnd(ev) => {
+                let ev2 = ev.clone();
+                self.defer_or_handle(
+                    |interrupts| interrupts.push_exec_end(ev),
+                    |this| this.handle_exec_end_now(ev2),
+                );
+            }
+            EventMsg::McpToolCallBegin(ev) => {
+                let ev2 = ev.clone();
+                self.defer_or_handle(
+                    |interrupts| interrupts.push_mcp_begin(ev),
+                    |this| {
+                        this.finalize_active_stream();
+                        this.flush_interrupt_queue();
+                        this.handle_mcp_begin_now(ev2);
                     },
-                ));
+                );
             }
-            EventMsg::McpToolCallBegin(McpToolCallBeginEvent {
-                call_id: _,
-                invocation,
-            }) => {
-                self.finalize_active_stream();
-                self.add_to_history(HistoryCell::new_active_mcp_tool_call(invocation));
-            }
-            EventMsg::McpToolCallEnd(McpToolCallEndEvent {
-                call_id: _,
-                duration,
-                invocation,
-                result,
-            }) => {
-                self.add_to_history(HistoryCell::new_completed_mcp_tool_call(
-                    80,
-                    invocation,
-                    duration,
-                    result
-                        .as_ref()
-                        .map(|r| r.is_error.unwrap_or(false))
-                        .unwrap_or(false),
-                    result,
-                ));
+            EventMsg::McpToolCallEnd(ev) => {
+                let ev2 = ev.clone();
+                self.defer_or_handle(
+                    |interrupts| interrupts.push_mcp_end(ev),
+                    |this| this.handle_mcp_end_now(ev2),
+                );
             }
             EventMsg::CustomToolCallBegin(CustomToolCallBeginEvent {
                 call_id: _,
@@ -1707,8 +1306,11 @@ impl ChatWidget<'_> {
                 parameters,
             }) => {
                 self.finalize_active_stream();
-                self.add_to_history(HistoryCell::new_active_custom_tool_call(
-                    tool_name, parameters,
+                // Flush any queued interrupts when streaming ends
+                self.flush_interrupt_queue();
+                let params_string = parameters.map(|p| p.to_string());
+                self.add_to_history(history_cell::new_active_custom_tool_call(
+                    tool_name, params_string,
                 ));
             }
             EventMsg::CustomToolCallEnd(CustomToolCallEndEvent {
@@ -1718,8 +1320,19 @@ impl ChatWidget<'_> {
                 duration,
                 result,
             }) => {
-                self.add_to_history(HistoryCell::new_completed_custom_tool_call(
-                    80, tool_name, parameters, duration, result,
+                // Convert parameters to String if present
+                let params_string = parameters.map(|p| p.to_string());
+                // Determine success and content from Result
+                let (success, content) = match result {
+                    Ok(content) => (true, content),
+                    Err(error) => (false, error),
+                };
+                self.add_to_history(history_cell::new_completed_custom_tool_call(
+                    tool_name, 
+                    params_string, 
+                    duration, 
+                    success, 
+                    content,
                 ));
             }
             EventMsg::GetHistoryEntryResponse(event) => {
@@ -1836,16 +1449,6 @@ impl ChatWidget<'_> {
                 // Request a redraw to update the display immediately
                 self.app_event_tx.send(AppEvent::RequestRedraw);
             }
-            EventMsg::AgentReasoningSectionBreak(_) => {
-                // Section break in reasoning - currently just ignored
-            }
-        }
-    }
-
-    /// Update the live log preview while a task is running.
-    pub(crate) fn update_latest_log(&mut self, line: String) {
-        if self.bottom_pane.is_task_running() {
-            self.bottom_pane.update_status_text(line);
         }
     }
 
@@ -1854,18 +1457,18 @@ impl ChatWidget<'_> {
     }
 
     pub(crate) fn add_diff_output(&mut self, diff_output: String) {
-        self.add_to_history(HistoryCell::new_diff_output(diff_output.clone()));
+        self.add_to_history(history_cell::new_diff_output(diff_output.clone()));
     }
 
     pub(crate) fn add_status_output(&mut self) {
-        self.add_to_history(HistoryCell::new_status_output(
+        self.add_to_history(history_cell::new_status_output(
             &self.config,
             &self.total_token_usage,
         ));
     }
 
     pub(crate) fn add_prompts_output(&mut self) {
-        self.add_to_history(HistoryCell::new_prompts_output());
+        self.add_to_history(history_cell::new_prompts_output());
     }
 
     pub(crate) fn handle_reasoning_command(&mut self, command_args: String) {
@@ -1885,7 +1488,7 @@ impl ChatWidget<'_> {
                         "Invalid reasoning level: '{}'. Use: low, medium, high, or none",
                         trimmed
                     );
-                    self.add_to_history(HistoryCell::new_error_event(message));
+                    self.add_to_history(history_cell::new_error_event(message));
                     return;
                 }
             };
@@ -1902,7 +1505,7 @@ impl ChatWidget<'_> {
         // Verbosity is not supported with ChatGPT auth
         if self.config.using_chatgpt_auth {
             let message = "Text verbosity is not available when using Sign in with ChatGPT".to_string();
-            self.add_to_history(HistoryCell::new_error_event(message));
+            self.add_to_history(history_cell::new_error_event(message));
             return;
         }
         
@@ -1921,7 +1524,7 @@ impl ChatWidget<'_> {
                         "Invalid verbosity level: '{}'. Use: low, medium, or high",
                         trimmed
                     );
-                    self.add_to_history(HistoryCell::new_error_event(message));
+                    self.add_to_history(history_cell::new_error_event(message));
                     return;
                 }
             };
@@ -1931,7 +1534,7 @@ impl ChatWidget<'_> {
 
             // Display success message
             let message = format!("Text verbosity set to: {}", new_verbosity);
-            self.add_to_history(HistoryCell::new_background_event(message));
+            self.add_to_history(history_cell::new_background_event(message));
 
             // Send the update to the backend
             let op = Op::ConfigureSession {
@@ -2077,7 +1680,7 @@ impl ChatWidget<'_> {
         self.submit_op(op);
 
         // Add status message to history
-        self.add_to_history(HistoryCell::new_reasoning_output(new_effort));
+        self.add_to_history(history_cell::new_reasoning_output(&new_effort));
     }
 
     pub(crate) fn set_text_verbosity(&mut self, new_verbosity: TextVerbosity) {
@@ -2105,7 +1708,7 @@ impl ChatWidget<'_> {
 
         // Add status message to history  
         let message = format!("Text verbosity set to: {}", new_verbosity);
-        self.add_to_history(HistoryCell::new_background_event(message));
+        self.add_to_history(history_cell::new_background_event(message));
     }
 
     /// Forward file-search results to the bottom pane.
@@ -2146,7 +1749,7 @@ impl ChatWidget<'_> {
             codex_core::config_types::ThemeName::Custom => "Custom",
         };
         let message = format!("✓ Theme changed to {}", theme_name);
-        self.add_to_history(HistoryCell::new_background_event(message));
+        self.add_to_history(history_cell::new_background_event(message));
     }
 
     fn save_theme_to_config(&self, new_theme: codex_core::config_types::ThemeName) {
@@ -2220,7 +1823,7 @@ impl ChatWidget<'_> {
     pub(crate) fn insert_history_lines(&mut self, lines: Vec<ratatui::text::Line<'static>>) {
         // Insert lines directly into history as text line cells
         for line in lines {
-            self.history_cells.push(HistoryCell::new_text_line(line));
+            self.history_cells.push(Box::new(history_cell::new_text_line(line)));
         }
         // Auto-follow if near bottom so new inserts are visible
         self.autoscroll_if_near_bottom();
@@ -2381,8 +1984,8 @@ impl ChatWidget<'_> {
         }
 
         // Add status message
-        self.add_to_history(HistoryCell::BackgroundEvent {
-            view: TextBlock::new(vec![Line::from("✅ Chrome launched with user profile")]),
+        self.add_to_history(history_cell::PlainHistoryCell { 
+            lines: vec![Line::from("✅ Chrome launched with user profile")],
         });
     }
 
@@ -2642,11 +2245,11 @@ impl ChatWidget<'_> {
         }
 
         // Add status message
-        self.add_to_history(HistoryCell::BackgroundEvent {
-            view: TextBlock::new(vec![Line::from(format!(
+        self.add_to_history(history_cell::PlainHistoryCell {
+            lines: vec![Line::from(format!(
                 "✅ Chrome launched with temporary profile at {}",
                 profile_dir.display()
-            ))]),
+            ))],
         });
     }
 
@@ -2661,8 +2264,8 @@ impl ChatWidget<'_> {
                 .lines()
                 .map(|line| Line::from(line.to_string()))
                 .collect();
-            self.add_to_history(HistoryCell::BackgroundEvent {
-                view: TextBlock::new(lines),
+            self.add_to_history(history_cell::PlainHistoryCell {
+                lines,
             });
 
             // Switch to internal browser mode when just "/browser" is typed
@@ -2695,8 +2298,8 @@ impl ChatWidget<'_> {
 
                 // Add status message
                 let status_msg = format!("🌐 Opening internal browser: {}", full_url);
-                self.add_to_history(HistoryCell::BackgroundEvent {
-                    view: TextBlock::new(vec![Line::from(status_msg)]),
+                self.add_to_history(history_cell::PlainHistoryCell {
+                    lines: vec![Line::from(status_msg)],
                 });
 
                 // Connect immediately, don't wait for message send
@@ -3026,8 +2629,8 @@ impl ChatWidget<'_> {
             .lines()
             .map(|line| Line::from(line.to_string()))
             .collect();
-        self.add_to_history(HistoryCell::BackgroundEvent {
-            view: TextBlock::new(lines),
+        self.add_to_history(history_cell::PlainHistoryCell {
+            lines,
         });
     }
 
@@ -3082,8 +2685,8 @@ impl ChatWidget<'_> {
             "🔗 Connecting to Chrome DevTools Protocol (port: {})...",
             port_display
         );
-        self.add_to_history(HistoryCell::BackgroundEvent {
-            view: TextBlock::new(vec![Line::from(status_msg)]),
+        self.add_to_history(history_cell::PlainHistoryCell {
+            lines: vec![Line::from(status_msg)],
         });
 
         // Connect in background - first try to connect, show dialog on failure
@@ -3147,8 +2750,8 @@ impl ChatWidget<'_> {
                 .lines()
                 .map(|line| Line::from(line.to_string()))
                 .collect();
-            self.add_to_history(HistoryCell::BackgroundEvent {
-                view: TextBlock::new(lines),
+            self.add_to_history(history_cell::PlainHistoryCell {
+                lines,
             });
             return;
         }
@@ -3832,122 +3435,6 @@ impl ChatWidget<'_> {
         }
     }
 
-    fn begin_stream(&mut self, kind: StreamKind) {
-        if let Some(current) = self.current_stream {
-            if current != kind {
-                self.finalize_stream(current);
-            }
-        }
-
-        if self.current_stream != Some(kind) {
-            self.current_stream = Some(kind);
-            self.stream_header_emitted = false;
-            // Clear any previous live content; we're starting a new stream.
-            // Reset with max width to disable wrapping
-            self.live_builder = RowBuilder::new(usize::MAX);
-            self.emit_stream_header(kind);
-        }
-    }
-
-    fn stream_push_and_maybe_commit(&mut self, delta: &str) {
-        self.live_builder.push_fragment(delta);
-
-        // Commit overflow rows (small batches) while keeping the last N rows visible.
-        let drained = self
-            .live_builder
-            .drain_commit_ready(self.live_max_rows as usize);
-        if !drained.is_empty() {
-            let mut lines: Vec<ratatui::text::Line<'static>> = Vec::new();
-            for r in drained {
-                let line = match self.current_stream {
-                    Some(StreamKind::Reasoning) => {
-                        // Use dimmer color for reasoning text
-                        use ratatui::style::Style;
-                        use ratatui::text::Span;
-                        ratatui::text::Line::from(Span::styled(
-                            r.text,
-                            Style::default().fg(crate::colors::text_dim()),
-                        ))
-                    }
-                    _ => ratatui::text::Line::from(r.text),
-                };
-                lines.push(line);
-            }
-            // Add to in-memory history instead of scrollback
-            for line in lines {
-                // Use dimmed reasoning for thinking to get both markdown and dimming
-                if matches!(self.current_stream, Some(StreamKind::Reasoning)) {
-                    self.add_to_history(HistoryCell::new_dimmed_reasoning_line(line));
-                } else {
-                    self.add_to_history(HistoryCell::new_text_line(line));
-                }
-            }
-            // Auto-follow if near bottom so streaming stays visible
-            self.autoscroll_if_near_bottom();
-            // Ensure input focus is maintained when adding streamed content
-            self.bottom_pane.ensure_input_focus();
-            self.app_event_tx.send(AppEvent::RequestRedraw);
-        }
-
-        // Clear the live ring since streaming content is now in the main scrollable area
-        self.bottom_pane.clear_live_ring();
-    }
-
-    fn finalize_stream(&mut self, kind: StreamKind) {
-        if self.current_stream != Some(kind) {
-            // Nothing to do; either already finalized or not the active stream.
-            return;
-        }
-        // Flush any partial line as a full row, then drain all remaining rows.
-        self.live_builder.end_line();
-        let remaining = self.live_builder.drain_rows();
-        // TODO: Re-add markdown rendering for assistant answers and reasoning.
-        // When finalizing, pass the accumulated text through `markdown::append_markdown`
-        // to build styled `Line<'static>` entries instead of raw plain text lines.
-        if !remaining.is_empty() {
-            let mut lines: Vec<ratatui::text::Line<'static>> = Vec::new();
-            for r in remaining {
-                let line = match kind {
-                    StreamKind::Reasoning => {
-                        // Use dimmer color for reasoning text
-                        use ratatui::style::Style;
-                        use ratatui::text::Span;
-                        ratatui::text::Line::from(Span::styled(
-                            r.text,
-                            Style::default().fg(crate::colors::text_dim()),
-                        ))
-                    }
-                    _ => ratatui::text::Line::from(r.text),
-                };
-                lines.push(line);
-            }
-            // Close the block with a blank line for readability (except for reasoning which already has spacing)
-            if kind != StreamKind::Reasoning {
-                lines.push(ratatui::text::Line::from(""));
-            }
-            // Add to in-memory history instead of scrollback
-            for line in lines {
-                // Use dimmed reasoning for thinking to get both markdown and dimming
-                if matches!(self.current_stream, Some(StreamKind::Reasoning)) {
-                    self.add_to_history(HistoryCell::new_dimmed_reasoning_line(line));
-                } else {
-                    self.add_to_history(HistoryCell::new_text_line(line));
-                }
-            }
-            // Auto-follow if near bottom when finalizing a stream
-            self.autoscroll_if_near_bottom();
-            // Ensure input focus is maintained when adding streamed content
-            self.bottom_pane.ensure_input_focus();
-            self.app_event_tx.send(AppEvent::RequestRedraw);
-        }
-
-        // Clear the live overlay and reset state for the next stream.
-        // Use max width to disable wrapping during streaming
-        self.live_builder = RowBuilder::new(usize::MAX);
-        self.bottom_pane.clear_live_ring();
-        self.current_stream = None;
-        self.stream_header_emitted = false;
-    }
 }
 
 impl WidgetRef for &ChatWidget<'_> {
@@ -3998,7 +3485,7 @@ impl WidgetRef for &ChatWidget<'_> {
         };
 
         // Collect all content items into a single list
-        let mut all_content: Vec<&HistoryCell> = Vec::new();
+        let mut all_content: Vec<&dyn HistoryCell> = Vec::new();
 
         // Add all history cells
         for cell in &self.history_cells {
@@ -4006,8 +3493,8 @@ impl WidgetRef for &ChatWidget<'_> {
         }
 
         // Add active/streaming cell if present
-        if let Some(cell) = &self.active_history_cell {
-            all_content.push(cell);
+        if let Some(ref cell) = self.active_exec_cell {
+            all_content.push(cell as &dyn HistoryCell);
         }
 
         // Add live streaming content if present
@@ -4015,23 +3502,11 @@ impl WidgetRef for &ChatWidget<'_> {
             .live_builder
             .display_rows()
             .into_iter()
-            .map(|r| {
-                if matches!(self.current_stream, Some(StreamKind::Reasoning)) {
-                    // Apply dimming to live reasoning content
-                    use ratatui::style::Style;
-                    use ratatui::text::Span;
-                    ratatui::text::Line::from(Span::styled(
-                        r.text,
-                        Style::default().fg(crate::colors::text_dim()),
-                    ))
-                } else {
-                    ratatui::text::Line::from(r.text)
-                }
-            })
+            .map(|r| ratatui::text::Line::from(r.text))
             .collect::<Vec<_>>();
 
         let streaming_cell = if !streaming_lines.is_empty() {
-            Some(HistoryCell::new_streaming_content(streaming_lines))
+            Some(history_cell::new_streaming_content(streaming_lines))
         } else {
             None
         };
@@ -4056,38 +3531,8 @@ impl WidgetRef for &ChatWidget<'_> {
             }
         }
 
-        // Check for active animations and clean up faded-out cells
-        let has_active_animation = self.history_cells.iter().any(|cell| {
-            if let HistoryCell::AnimatedWelcome {
-                start_time,
-                completed,
-                fade_start,
-                faded_out,
-            } = cell
-            {
-                // Check for initial animation
-                if !completed.get() {
-                    let elapsed = start_time.elapsed();
-                    let animation_duration = std::time::Duration::from_secs(2);
-                    return elapsed < animation_duration;
-                }
-
-                // Check for fade animation
-                if let Some(fade_time) = fade_start.get() {
-                    if !faded_out.get() {
-                        let fade_elapsed = fade_time.elapsed();
-                        let fade_duration = std::time::Duration::from_millis(800);
-                        return fade_elapsed < fade_duration;
-                    }
-                }
-
-                false
-            } else {
-                false
-            }
-        });
-
-        // Note: Faded-out AnimatedWelcome cells are cleaned up in process_animation_cleanup
+        // Check for active animations using the trait method
+        let has_active_animation = self.history_cells.iter().any(|cell| cell.is_animating());
 
         if has_active_animation {
             self.app_event_tx.send(AppEvent::RequestRedraw);
