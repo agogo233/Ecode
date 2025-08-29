@@ -1,6 +1,6 @@
-# Config
+# Configuration docs moved
 
-Codex supports several mechanisms for setting config values:
+This file has moved. Please see the latest configuration documentation here:
 
 - Config-specific command-line flags, such as `--model o3` (highest precedence).
 - A generic `-c`/`--config` flag that takes a `key=value` pair, such as `--config model="o3"`.
