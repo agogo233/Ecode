@@ -1,16 +1,17 @@
 ---
 source: tui/tests/vt100_chatwidget_snapshot.rs
-assertion_line: 801
 expression: output
 ---
  +----------------------------------------------------------------------------+
  |                                    Code                                    |
  +----------------------------------------------------------------------------+
    parallel work)
-   /limits - visualize rate limits (opens Settings at Limits)
+   /limits - open Settings overlay at Limits section
    /review - review your changes for potential issues
    /auto - work autonomously on long tasks with Auto Drive Experimental
    /cloud - browse, apply, and create cloud tasks NEW
+
+ » Started qa-bot
 
  › Can you gather details from the latest docs update?
 
@@ -27,8 +28,6 @@ expression: output
    |   Clicked  #login-button
    |
    +- [Ctrl+B] Expand · [Esc] Stop
-
-   Agent batch "qa-bot" started here; latest status is shown below.
 
    +- deploy-helper
    |
