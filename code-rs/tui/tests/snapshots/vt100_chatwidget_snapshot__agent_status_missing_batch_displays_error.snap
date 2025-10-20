@@ -1,0 +1,24 @@
+---
+source: tui/tests/vt100_chatwidget_snapshot.rs
+assertion_line: 1295
+expression: output
+---
+ +----------------------------------------------------------------------------+
+ |                                    Code                                    |
+ +----------------------------------------------------------------------------+
+ + Agents --------------------------------------------------------------------+
+ | • Orphan (running 0s) - trying something risky        Ctrl+A open terminal |
+ +----------------------------------------------------------------------------+
+   /review - review your changes for potential issues
+   /auto - work autonomously on long tasks with Auto Drive Experimental
+   /cloud - browse, apply, and create cloud tasks NEW
+
+ › /agents
+
+ ✖ ⚠️  status_update: missing agent batch_id. tool=agent_status
+   agents=orphan-agent
+
+ +----------------------------- ✶ Using tools... -----------------------------+
+ | What can I code for you today?                                             |
+ +----------------------------------------------------------------------------+
+   Read Only  (Shift+Tab change)                                   Ctrl+H help
