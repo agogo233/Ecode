@@ -157,7 +157,7 @@ jobs:
           done
 
       - name: Upload artifacts (GNU)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cloud-build-linux-x64-gnu
           path: artifacts/
@@ -289,7 +289,7 @@ jobs:
           done
 
       - name: Upload artifacts (MUSL)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cloud-build-linux-x64-musl
           path: artifacts/
