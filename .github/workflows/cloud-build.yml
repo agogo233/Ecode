@@ -140,18 +140,13 @@ jobs:
           mkdir -p artifacts
           cp code-rs/target/x86_64-unknown-linux-gnu/release/code artifacts/code-x86_64-unknown-linux-gnu
 
-      - name: Install zstd
-        shell: bash
-        run: sudo apt-get update -qq && sudo apt-get install -y zstd
-
-      - name: Compress artifacts (dual-format)
+      - name: Compress artifacts
         shell: bash
         run: |
           shopt -s nullglob
           for f in artifacts/*; do
             [ -f "$f" ] || continue
             base=$(basename "$f")
-            zstd -T0 -19 --force -o "artifacts/${base}.zst" "$f"
             tar -C artifacts -czf "artifacts/${base}.tar.gz" "$base"
             rm -f "$f"
           done
@@ -232,7 +227,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y musl-tools pkg-config zstd
+          sudo apt-get install -y musl-tools pkg-config
           echo 'CC=musl-gcc' >> "$GITHUB_ENV"
           echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc' >> "$GITHUB_ENV"
           echo 'PKG_CONFIG_ALLOW_CROSS=1' >> "$GITHUB_ENV"
@@ -272,18 +267,13 @@ jobs:
           mkdir -p artifacts
           cp code-rs/target/x86_64-unknown-linux-musl/release/code artifacts/code-x86_64-unknown-linux-musl
 
-      - name: Install zstd
-        shell: bash
-        run: sudo apt-get update -qq && sudo apt-get install -y zstd
-
-      - name: Compress artifacts (dual-format)
+      - name: Compress artifacts
         shell: bash
         run: |
           shopt -s nullglob
           for f in artifacts/*; do
             [ -f "$f" ] || continue
             base=$(basename "$f")
-            zstd -T0 -19 --force -o "artifacts/${base}.zst" "$f"
             tar -C artifacts -czf "artifacts/${base}.tar.gz" "$base"
             rm -f "$f"
           done
@@ -331,11 +321,9 @@ jobs:
             ### Downloads
 
             #### GNU (glibc)
-            - [code-x86_64-unknown-linux-gnu.zst](https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-x86_64-unknown-linux-gnu.zst)
             - [code-x86_64-unknown-linux-gnu.tar.gz](https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-x86_64-unknown-linux-gnu.tar.gz)
 
             #### MUSL (static)
-            - [code-x86_64-unknown-linux-musl.zst](https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-x86_64-unknown-linux-musl.zst)
             - [code-x86_64-unknown-linux-musl.tar.gz](https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-x86_64-unknown-linux-musl.tar.gz)
 
             ```bash
