@@ -227,12 +227,12 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y musl-tools pkg-config
-          echo 'CC=musl-gcc' >> "$GITHUB_ENV"
+          sudo apt-get install -y musl-tools pkg-config mold
+          echo 'CC=sccache musl-gcc' >> "$GITHUB_ENV"
           echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc' >> "$GITHUB_ENV"
           echo 'PKG_CONFIG_ALLOW_CROSS=1' >> "$GITHUB_ENV"
           echo 'OPENSSL_STATIC=1' >> "$GITHUB_ENV"
-          echo 'RUSTFLAGS=-Awarnings -C debuginfo=0 -C strip=symbols -C panic=abort' >> "$GITHUB_ENV"
+          echo 'RUSTFLAGS=-Awarnings -C link-arg=-fuse-ld=mold -C debuginfo=0 -C strip=symbols -C panic=abort' >> "$GITHUB_ENV"
 
       - name: Prefetch deps
         working-directory: ${{ env.RUST_WORKSPACE_DIR }}
