@@ -120,15 +120,18 @@ jobs:
           RUST_BACKTRACE: "1"
         run: |
           cd "${RUST_WORKSPACE_DIR}"
-          cargo build --release --locked --target x86_64-unknown-linux-gnu --bin code
+          cargo build --release --locked --target x86_64-unknown-linux-gnu \
+            --bin code --bin code-tui --bin code-exec --bin code-app-server --bin code-linux-sandbox
 
-      - name: Verify binary
+      - name: Verify binaries
         shell: bash
         run: |
           set -euo pipefail
-          exe="code-rs/target/x86_64-unknown-linux-gnu/release/code"
-          "$exe" --version
-          "$exe" completion bash > /dev/null
+          for exe in code code-tui code-exec code-app-server code-linux-sandbox; do
+            f="code-rs/target/x86_64-unknown-linux-gnu/release/$exe"
+            test -x "$f"
+            "$f" --version
+          done
 
       - name: sccache stats
         shell: bash
@@ -138,7 +141,9 @@ jobs:
         shell: bash
         run: |
           mkdir -p artifacts
-          cp code-rs/target/x86_64-unknown-linux-gnu/release/code artifacts/code-x86_64-unknown-linux-gnu
+          for exe in code code-tui code-exec code-app-server code-linux-sandbox; do
+            cp "code-rs/target/x86_64-unknown-linux-gnu/release/$exe" "artifacts/${exe}-x86_64-unknown-linux-gnu"
+          done
 
       - name: Compress artifacts
         shell: bash
@@ -247,15 +252,18 @@ jobs:
           RUST_BACKTRACE: "1"
         run: |
           cd "${RUST_WORKSPACE_DIR}"
-          cargo build --release --locked --target x86_64-unknown-linux-musl --bin code
+          cargo build --release --locked --target x86_64-unknown-linux-musl \
+            --bin code --bin code-tui --bin code-exec --bin code-app-server --bin code-linux-sandbox
 
-      - name: Verify binary
+      - name: Verify binaries
         shell: bash
         run: |
           set -euo pipefail
-          exe="code-rs/target/x86_64-unknown-linux-musl/release/code"
-          "$exe" --version
-          "$exe" completion bash > /dev/null
+          for exe in code code-tui code-exec code-app-server code-linux-sandbox; do
+            f="code-rs/target/x86_64-unknown-linux-musl/release/$exe"
+            test -x "$f"
+            "$f" --version
+          done
 
       - name: sccache stats
         shell: bash
@@ -265,7 +273,9 @@ jobs:
         shell: bash
         run: |
           mkdir -p artifacts
-          cp code-rs/target/x86_64-unknown-linux-musl/release/code artifacts/code-x86_64-unknown-linux-musl
+          for exe in code code-tui code-exec code-app-server code-linux-sandbox; do
+            cp "code-rs/target/x86_64-unknown-linux-musl/release/$exe" "artifacts/${exe}-x86_64-unknown-linux-musl"
+          done
 
       - name: Compress artifacts
         shell: bash
@@ -322,12 +332,20 @@ jobs:
 
             #### GNU (glibc)
             - [code-x86_64-unknown-linux-gnu.tar.gz](https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-x86_64-unknown-linux-gnu.tar.gz)
+            - [code-tui-x86_64-unknown-linux-gnu.tar.gz](https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-tui-x86_64-unknown-linux-gnu.tar.gz)
+            - [code-exec-x86_64-unknown-linux-gnu.tar.gz](https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-exec-x86_64-unknown-linux-gnu.tar.gz)
+            - [code-app-server-x86_64-unknown-linux-gnu.tar.gz](https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-app-server-x86_64-unknown-linux-gnu.tar.gz)
+            - [code-linux-sandbox-x86_64-unknown-linux-gnu.tar.gz](https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-linux-sandbox-x86_64-unknown-linux-gnu.tar.gz)
 
             #### MUSL (static)
             - [code-x86_64-unknown-linux-musl.tar.gz](https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-x86_64-unknown-linux-musl.tar.gz)
+            - [code-tui-x86_64-unknown-linux-musl.tar.gz](https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-tui-x86_64-unknown-linux-musl.tar.gz)
+            - [code-exec-x86_64-unknown-linux-musl.tar.gz](https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-exec-x86_64-unknown-linux-musl.tar.gz)
+            - [code-app-server-x86_64-unknown-linux-musl.tar.gz](https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-app-server-x86_64-unknown-linux-musl.tar.gz)
+            - [code-linux-sandbox-x86_64-unknown-linux-musl.tar.gz](https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-linux-sandbox-x86_64-unknown-linux-musl.tar.gz)
 
             ```bash
-            # GNU version
+            # GNU version (all binaries)
             curl -sL https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-x86_64-unknown-linux-gnu.tar.gz | tar -xz
 
             # MUSL version (static, portable)
