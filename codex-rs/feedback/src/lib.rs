@@ -28,8 +28,10 @@ pub use feedback_diagnostics::FeedbackDiagnostic;
 pub use feedback_diagnostics::FeedbackDiagnostics;
 
 const DEFAULT_MAX_BYTES: usize = 4 * 1024 * 1024; // 4 MiB
-const SENTRY_DSN: &str =
-    "https://ae32ed50620d7a7792c1ce5df38b3e3e@o33249.ingest.us.sentry.io/4510195390611458";
+// Feedback upload is permanently disabled. The DSN is cleared so that any
+// code path reaching upload_feedback will fail at DSN parsing before any
+// data leaves the process.
+const SENTRY_DSN: &str = "https://00000000000000000000000000000000@o000000.ingest.us.sentry.io/0000000";
 const UPLOAD_TIMEOUT_SECS: u64 = 10;
 const FEEDBACK_TAGS_TARGET: &str = "feedback_tags";
 const MAX_FEEDBACK_TAGS: usize = 64;
