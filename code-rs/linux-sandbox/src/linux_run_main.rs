@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use crate::landlock::apply_sandbox_policy_to_current_thread;
 
 #[derive(Debug, Parser)]
+#[command(name = "code-linux-sandbox", version)]
 pub struct LandlockCommand {
     /// It is possible that the cwd used in the context of the sandbox policy
     /// is different from the cwd of the process to spawn.
