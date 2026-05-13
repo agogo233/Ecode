@@ -5,6 +5,7 @@ use code_arg0::arg0_dispatch_or_else;
 use code_common::CliConfigOverrides;
 
 #[derive(Debug, Parser)]
+#[command(name = "code-app-server", version)]
 struct AppServerArgs {
     /// Transport endpoint URL. Supported values: `stdio://` (default),
     /// `ws://IP:PORT`.
