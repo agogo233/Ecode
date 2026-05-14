@@ -33,7 +33,7 @@ use crate::util::backoff;
 use code_protocol::models::ContentItem;
 use code_protocol::models::ReasoningItemContent;
 use code_protocol::models::ResponseItem;
-use code_protocol::protocol::TokenUsage;
+use crate::protocol::TokenUsage;
 
 pub(crate) async fn stream_anthropic_messages(
     prompt: &Prompt,
@@ -133,7 +133,7 @@ pub(crate) async fn stream_anthropic_messages(
                 let msg = format!(
                     "Anthropic API error (HTTP {}): {}",
                     status,
-                    error_detail.unwrap_or(body_text)
+                    error_detail.unwrap_or(body_text.clone())
                 );
                 if status.is_server_error() {
                     return Err(CodexErr::ServerError(msg));

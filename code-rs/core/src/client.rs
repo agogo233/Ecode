@@ -352,6 +352,7 @@ impl ModelClient {
                 prefer_websockets.then_some(preferred_ws_version_from_env())
             }
             WireApi::Chat => None,
+            WireApi::Anthropic => None,
         }
     }
 
