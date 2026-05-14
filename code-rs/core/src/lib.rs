@@ -15,6 +15,7 @@ mod account_switching;
 pub use account_switching::{RateLimitSwitchState, switch_active_account_on_rate_limit};
 pub mod bash;
 mod auto_drive_pid;
+mod anthropic_completions;
 mod chat_completions;
 mod client;
 mod client_common;

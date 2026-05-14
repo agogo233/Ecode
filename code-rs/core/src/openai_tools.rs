@@ -1000,6 +1000,34 @@ pub(crate) fn create_tools_json_for_chat_completions_api(
     Ok(tools_json)
 }
 
+/// Returns JSON values compatible with the Anthropic Messages API tool format:
+/// <https://docs.anthropic.com/en/docs/build-with-claude/tool-use>
+///
+/// Anthropic tools use `input_schema` instead of `parameters`, and omit the
+/// outer `type` and `strict` fields found in the OpenAI format.
+pub(crate) fn create_tools_json_for_anthropic(
+    tools: &[OpenAiTool],
+) -> crate::error::Result<Vec<serde_json::Value>> {
+    let responses_api_tools_json = create_tools_json_for_responses_api(tools)?;
+    let tools_json = responses_api_tools_json
+        .into_iter()
+        .filter_map(|mut tool| {
+            if tool.get("type") != Some(&serde_json::Value::String("function".to_string())) {
+                return None;
+            }
+            tool.as_object_mut().map(|map| {
+                map.remove("type");
+                map.remove("strict");
+                if let Some(params) = map.remove("parameters") {
+                    map.insert("input_schema".to_string(), params);
+                }
+                serde_json::Value::Object(map.clone())
+            })
+        })
+        .collect::<Vec<serde_json::Value>>();
+    Ok(tools_json)
+}
+
 pub(crate) fn mcp_tool_to_openai_tool(
     fully_qualified_name: String,
     tool: mcp_types::Tool,

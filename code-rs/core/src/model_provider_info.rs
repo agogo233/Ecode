@@ -81,6 +81,11 @@ pub enum WireApi {
     /// Regular Chat Completions compatible with `/v1/chat/completions`.
     #[default]
     Chat,
+
+    /// Native Anthropic Messages API at `/v1/messages`.
+    /// Unlike the other variants, this uses `x-api-key` auth and the
+    /// Anthropic-specific request/response schema.
+    Anthropic,
 }
 
 /// Serializable representation of a provider definition.
@@ -306,9 +311,14 @@ impl ModelProviderInfo {
         let mut builder = client.post(&url);
 
         if let Some(auth) = auth.as_ref() {
-            builder = builder.bearer_auth(auth.get_token().await?);
-            if auth.is_fedramp_account() {
-                builder = builder.header("X-OpenAI-Fedramp", "true");
+            if matches!(self.wire_api, WireApi::Anthropic) {
+                let token = auth.get_token().await?;
+                builder = builder.header("x-api-key", token);
+            } else {
+                builder = builder.bearer_auth(auth.get_token().await?);
+                if auth.is_fedramp_account() {
+                    builder = builder.header("X-OpenAI-Fedramp", "true");
+                }
             }
         }
 
@@ -341,9 +351,14 @@ impl ModelProviderInfo {
         let mut builder = client.request(method, url);
 
         if let Some(auth) = auth.as_ref() {
-            builder = builder.bearer_auth(auth.get_token().await?);
-            if auth.is_fedramp_account() {
-                builder = builder.header("X-OpenAI-Fedramp", "true");
+            if matches!(self.wire_api, WireApi::Anthropic) {
+                let token = auth.get_token().await?;
+                builder = builder.header("x-api-key", token);
+            } else {
+                builder = builder.bearer_auth(auth.get_token().await?);
+                if auth.is_fedramp_account() {
+                    builder = builder.header("X-OpenAI-Fedramp", "true");
+                }
             }
         }
 
@@ -455,6 +470,7 @@ impl ModelProviderInfo {
                 format!("{base_url}/responses{query_string}")
             }
             WireApi::Chat => format!("{base_url}/chat/completions{query_string}"),
+            WireApi::Anthropic => format!("{base_url}/messages{query_string}"),
         }
     }
 
@@ -701,6 +717,7 @@ fn wire_api_override_from_env(env_key: &str) -> Option<WireApi> {
             "chat" => Some(WireApi::Chat),
             "responses" => Some(WireApi::Responses),
             "responses_websocket" => Some(WireApi::ResponsesWebsocket),
+            "anthropic" => Some(WireApi::Anthropic),
             other if !other.is_empty() => {
                 tracing::warn!(
                     "Ignoring unknown {env_key} value '{other}'; falling back to default wire API"
