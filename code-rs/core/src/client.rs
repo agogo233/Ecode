@@ -56,7 +56,6 @@ use crate::config::Config;
 use crate::config_types::ReasoningEffort as ReasoningEffortConfig;
 use crate::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use crate::config_types::ContextMode;
-use crate::config_types::ServiceTier;
 use crate::config_types::TextVerbosity as TextVerbosityConfig;
 use crate::debug_logger::DebugLogger;
 use crate::default_client::create_client;
@@ -352,7 +351,6 @@ impl ModelClient {
                 prefer_websockets.then_some(preferred_ws_version_from_env())
             }
             WireApi::Chat => None,
-            WireApi::Anthropic => None,
         }
     }
 
@@ -680,28 +678,6 @@ impl ModelClient {
 
                 Ok(ResponseStream { rx_event: rx })
             }
-            WireApi::Anthropic => {
-                let effective_family = prompt
-                    .model_family_override
-                    .as_ref()
-                    .unwrap_or(&self.config.model_family);
-                let model_slug = prompt
-                    .model_override
-                    .as_deref()
-                    .unwrap_or(self.config.model.as_str());
-                crate::anthropic_completions::stream_anthropic_messages(
-                    prompt,
-                    effective_family,
-                    model_slug,
-                    &self.client,
-                    &self.provider,
-                    &self.debug_logger,
-                    self.auth_manager.clone(),
-                    self.otel_event_manager.clone(),
-                    log_tag,
-                )
-                .await
-            }
         }
     }
 
@@ -805,11 +781,10 @@ impl ModelClient {
                 store: self.provider.is_azure_responses_endpoint(),
                 stream: true,
                 include,
-                service_tier: match self.config.service_tier {
-                    Some(ServiceTier::Fast) => Some("priority".to_string()),
-                    Some(service_tier) => Some(service_tier.to_string()),
-                    None => None,
-                },
+                service_tier: self
+                    .config
+                    .service_tier
+                    .map(|service_tier| service_tier.request_value().to_string()),
                 prompt_cache_key: Some(session_id_str.clone()),
             };
 
@@ -1284,11 +1259,10 @@ impl ModelClient {
                 store: azure_workaround,
                 stream: true,
                 include,
-                service_tier: match self.config.service_tier {
-                    Some(ServiceTier::Fast) => Some("priority".to_string()),
-                    Some(service_tier) => Some(service_tier.to_string()),
-                    None => None,
-                },
+                service_tier: self
+                    .config
+                    .service_tier
+                    .map(|service_tier| service_tier.request_value().to_string()),
                 // Use a stable per-process cache key (session id). With store=false this is inert.
                 prompt_cache_key: Some(session_id_str.clone()),
             };
@@ -1963,11 +1937,9 @@ impl ModelClient {
             {
                 None
             } else {
-                match self.config.service_tier {
-                    Some(ServiceTier::Fast) => Some("priority".to_string()),
-                    Some(service_tier) => Some(service_tier.to_string()),
-                    None => None,
-                }
+                self.config
+                    .service_tier
+                    .map(|service_tier| service_tier.request_value().to_string())
             };
             let payload = CompactHistoryRequest {
                 model: model_slug,

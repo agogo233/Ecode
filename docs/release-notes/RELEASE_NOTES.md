@@ -1,14 +1,14 @@
-## @just-every/code v0.6.98
+## @just-every/code v0.6.101
 
-This release improves TUI workflows, thread handling, plugin sharing, and Linux portability across Code.
+This release improves model routing, session workflows, plugin discovery, and execution reliability.
 
 ### Changes
 
-- TUI: add upstream-compatible slash commands, a redesigned session picker, raw scrollback mode, and broader key/input polish.
-- Threads: return session IDs from thread and fork flows, paginate thread history, and keep live thread snapshots in sync.
-- Plugins: expand plugin sharing with access controls, discoverability settings, marketplace source filters, and richer plugin details.
-- Auth/Environments: enable AWS login credentials for Bedrock and route tools through selected environments more consistently.
-- Linux sandbox: bundle standalone `bwrap` builds and harden fallback/startup handling to improve reliability on Linux.
+- Models: update default agent routing, accept upstream tool-mode metadata, and fix Bedrock GPT service tiers.
+- CLI/Threads: add archive commands and keep resumed prompt history scoped to the session.
+- Plugins/Skills: improve connector and install suggestions, and add runtime extra skill roots.
+- Sandbox/Exec: preserve deny-read protections, tighten Windows requirements, and clean up filesystem helpers.
+- TUI/Tools: fix Vim editing, render multiline hook output, show web search activity, and finalize image generation natively.
 
 ### Install
 
@@ -19,6 +19,6 @@ code
 
 ### Thanks
 
-Thanks to @owenlin0, @alfozan111, and @vincentkoc for contributions!
+Thanks to @owenlin0 for contributions!
 
-Compare: https://github.com/just-every/code/compare/v0.6.97...v0.6.98
+Compare: https://github.com/just-every/code/compare/v0.6.100...v0.6.101

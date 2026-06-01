@@ -461,6 +461,7 @@ mod tests {
             priority: 0,
             additional_speed_tiers: Vec::new(),
             service_tiers: Vec::new(),
+            default_service_tier: None,
             availability_nux: None,
             upgrade: None,
             base_instructions: String::new(),
@@ -481,6 +482,7 @@ mod tests {
             experimental_supported_tools: Vec::new(),
             input_modalities: default_input_modalities(),
             supports_search_tool: false,
+            tool_mode: None,
             prefer_websockets: false,
             used_fallback_model_metadata: false,
         }

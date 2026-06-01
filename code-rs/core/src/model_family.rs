@@ -455,34 +455,6 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             max_output_tokens: Some(MAX_OUTPUT_DEFAULT),
             truncation_policy: TruncationPolicy::Bytes(10_000),
         )
-    } else if slug.starts_with("claude-sonnet-4") {
-        model_family!(
-            slug, "claude-sonnet-4",
-            supports_parallel_tool_calls: true,
-            context_window: Some(CONTEXT_WINDOW_200K),
-            max_output_tokens: Some(8192),
-        )
-    } else if slug.starts_with("claude-opus-4") {
-        model_family!(
-            slug, "claude-opus-4",
-            supports_parallel_tool_calls: true,
-            context_window: Some(CONTEXT_WINDOW_200K),
-            max_output_tokens: Some(8192),
-        )
-    } else if slug.starts_with("claude-haiku-4") {
-        model_family!(
-            slug, "claude-haiku-4",
-            supports_parallel_tool_calls: true,
-            context_window: Some(CONTEXT_WINDOW_200K),
-            max_output_tokens: Some(8192),
-        )
-    } else if slug.starts_with("claude") {
-        model_family!(
-            slug, "claude",
-            supports_parallel_tool_calls: true,
-            context_window: Some(CONTEXT_WINDOW_200K),
-            max_output_tokens: Some(8192),
-        )
     } else {
         None
     }
@@ -549,7 +521,10 @@ mod tests {
     fn bundled_model_metadata_applies_upstream_reasoning_default() {
         let family = find_family_for_model("gpt-5.4").expect("known upstream model");
 
-        assert_eq!(family.default_reasoning_effort, Some(ReasoningEffort::XHigh));
+        assert_eq!(
+            family.default_reasoning_effort,
+            Some(ReasoningEffort::Medium)
+        );
     }
 }
 
