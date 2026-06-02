@@ -128,11 +128,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for exe in code code-tui code-exec code-app-server code-linux-sandbox; do
+          for exe in code code-tui code-exec code-linux-sandbox; do
             f="code-rs/target/x86_64-unknown-linux-gnu/release/$exe"
             test -x "$f"
             "$f" --version
           done
+          # code-app-server does not support --version
+          f="code-rs/target/x86_64-unknown-linux-gnu/release/code-app-server"
+          test -x "$f"
 
       - name: sccache stats
         shell: bash
@@ -260,11 +263,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for exe in code code-tui code-exec code-app-server code-linux-sandbox; do
+          for exe in code code-tui code-exec code-linux-sandbox; do
             f="code-rs/target/x86_64-unknown-linux-musl/release/$exe"
             test -x "$f"
             "$f" --version
           done
+          # code-app-server does not support --version
+          f="code-rs/target/x86_64-unknown-linux-musl/release/code-app-server"
+          test -x "$f"
 
       - name: sccache stats
         shell: bash
