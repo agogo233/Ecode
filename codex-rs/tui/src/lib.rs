@@ -1089,30 +1089,8 @@ pub async fn run_main(
     remove_legacy_tui_log_file(config.codex_home.as_path());
 
     let otel_originator = originator().value;
-    let otel = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        crate::legacy_core::otel_init::build_provider(
-            &config,
-            env!("CARGO_PKG_VERSION"),
-            /*service_name_override*/ None,
-            /*default_analytics_enabled*/ true,
-        )
-    })) {
-        Ok(Ok(otel)) => otel,
-        Ok(Err(e)) => {
-            #[allow(clippy::print_stderr)]
-            {
-                eprintln!("Could not create otel exporter: {e}");
-            }
-            None
-        }
-        Err(_) => {
-            #[allow(clippy::print_stderr)]
-            {
-                eprintln!("Could not create otel exporter: panicked during initialization");
-            }
-            None
-        }
-    };
+    let otel = None;
+    
     crate::legacy_core::otel_init::record_process_start(otel.as_ref(), otel_originator.as_str());
     crate::legacy_core::otel_init::install_sqlite_telemetry(
         otel.as_ref(),
