@@ -1,10 +1,6 @@
 use std::process::Command;
 
 fn main() {
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
-        println!("cargo:rustc-link-arg=-ObjC");
-    }
-
     // Inject Git version info at build time
     let git_version = get_git_version();
     println!("cargo:rustc-env=CODEX_BUILD_VERSION={}", git_version);
