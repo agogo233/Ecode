@@ -2539,6 +2539,7 @@ async fn inactive_thread_permissions_approval_preserves_file_system_permissions(
             thread_id: thread_id.to_string(),
             turn_id: "turn-approval".to_string(),
             item_id: "call-approval".to_string(),
+            environment_id: Some("remote".to_string()),
             started_at_ms: 0,
             cwd: test_absolute_path("/tmp"),
             reason: Some("Need access to .git".to_string()),
@@ -2557,7 +2558,9 @@ async fn inactive_thread_permissions_approval_preserves_file_system_permissions(
     };
 
     let Some(ThreadInteractiveRequest::Approval(ApprovalRequest::Permissions {
-        permissions, ..
+        environment_id,
+        permissions,
+        ..
     })) = app
         .interactive_request_for_thread_request(thread_id, &request)
         .await
@@ -2565,6 +2568,7 @@ async fn inactive_thread_permissions_approval_preserves_file_system_permissions(
         panic!("expected permissions approval request");
     };
 
+    assert_eq!(environment_id.as_deref(), Some("remote"));
     assert_eq!(
         permissions,
         RequestPermissionProfile {
@@ -2767,6 +2771,7 @@ async fn inactive_thread_started_notification_initializes_replay_session() -> Re
                 id: agent_thread_id.to_string(),
                 session_id: agent_thread_id.to_string(),
                 forked_from_id: None,
+                parent_thread_id: None,
                 preview: "agent thread".to_string(),
                 ephemeral: false,
                 model_provider: "agent-provider".to_string(),
@@ -2856,6 +2861,7 @@ async fn inactive_thread_started_notification_preserves_primary_model_when_path_
                 id: agent_thread_id.to_string(),
                 session_id: agent_thread_id.to_string(),
                 forked_from_id: None,
+                parent_thread_id: None,
                 preview: "agent thread".to_string(),
                 ephemeral: false,
                 model_provider: "agent-provider".to_string(),
@@ -2914,6 +2920,7 @@ async fn thread_read_session_state_does_not_reuse_primary_permission_profile() {
         id: read_thread_id.to_string(),
         session_id: read_thread_id.to_string(),
         forked_from_id: None,
+        parent_thread_id: None,
         preview: "read thread".to_string(),
         ephemeral: false,
         model_provider: "read-provider".to_string(),
@@ -3781,6 +3788,7 @@ async fn make_test_app() -> App {
         commit_anim_running: Arc::new(AtomicBool::new(false)),
         status_line_invalid_items_warned: Arc::new(AtomicBool::new(false)),
         terminal_title_invalid_items_warned: Arc::new(AtomicBool::new(false)),
+        skill_load_warnings: SkillLoadWarningState::default(),
         backtrack: BacktrackState::default(),
         backtrack_render_pending: false,
         feedback: codex_feedback::CodexFeedback::new(),
@@ -3844,6 +3852,7 @@ async fn make_test_app_with_channels() -> (
             commit_anim_running: Arc::new(AtomicBool::new(false)),
             status_line_invalid_items_warned: Arc::new(AtomicBool::new(false)),
             terminal_title_invalid_items_warned: Arc::new(AtomicBool::new(false)),
+            skill_load_warnings: SkillLoadWarningState::default(),
             backtrack: BacktrackState::default(),
             backtrack_render_pending: false,
             feedback: codex_feedback::CodexFeedback::new(),
@@ -4635,6 +4644,61 @@ async fn backtrack_remote_image_only_selection_clears_existing_composer_draft() 
 }
 
 #[tokio::test]
+async fn cancelled_turn_edit_restores_prompt_and_rolls_back_latest_turn() {
+    let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+    app.transcript_cells = vec![Arc::new(UserHistoryCell {
+        message: "original".to_string(),
+        text_elements: Vec::new(),
+        local_image_paths: Vec::new(),
+        remote_image_urls: Vec::new(),
+    }) as Arc<dyn HistoryCell>];
+    let prompt = crate::chatwidget::UserMessage {
+        text: "edit me".to_string(),
+        local_images: Vec::new(),
+        remote_image_urls: vec!["https://example.com/edit.png".to_string()],
+        text_elements: Vec::new(),
+        mention_bindings: Vec::new(),
+    };
+
+    app.apply_cancelled_turn_edit(prompt);
+
+    assert_eq!(app.chat_widget.composer_text_with_pending(), "edit me");
+    assert_snapshot!(
+        "cancelled_turn_edit_restores_composer",
+        app.chat_widget.composer_text_with_pending()
+    );
+    assert_eq!(
+        app.chat_widget.remote_image_urls(),
+        vec!["https://example.com/edit.png".to_string()]
+    );
+    assert_matches!(op_rx.try_recv(), Ok(Op::ThreadRollback { num_turns: 1 }));
+}
+
+#[tokio::test]
+async fn first_cancelled_turn_edit_restores_prompt_without_local_history() {
+    let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
+    let prompt = crate::chatwidget::UserMessage {
+        text: "edit first prompt".to_string(),
+        local_images: Vec::new(),
+        remote_image_urls: vec!["https://example.com/edit.png".to_string()],
+        text_elements: Vec::new(),
+        mention_bindings: Vec::new(),
+    };
+
+    app.apply_cancelled_turn_edit(prompt);
+
+    assert_eq!(
+        app.chat_widget.composer_text_with_pending(),
+        "edit first prompt"
+    );
+    assert_eq!(
+        app.chat_widget.remote_image_urls(),
+        vec!["https://example.com/edit.png".to_string()]
+    );
+    assert_matches!(op_rx.try_recv(), Ok(Op::ThreadRollback { num_turns: 1 }));
+}
+
+#[tokio::test]
 async fn backtrack_resubmit_preserves_data_image_urls_in_user_turn() {
     let (mut app, _app_event_rx, mut op_rx) = make_test_app_with_channels().await;
 
@@ -5011,6 +5075,7 @@ async fn thread_rollback_response_discards_queued_active_thread_events() {
                 id: thread_id.to_string(),
                 session_id: thread_id.to_string(),
                 forked_from_id: None,
+                parent_thread_id: None,
                 preview: String::new(),
                 ephemeral: false,
                 model_provider: "openai".to_string(),
@@ -5178,7 +5243,7 @@ async fn override_turn_context_sends_thread_settings_update() {
             .expect("thread/start should succeed");
         let thread_id = started.session.thread_id;
         let initial_model = started.session.model.clone();
-        let initial_effort = started.session.reasoning_effort;
+        let initial_effort = started.session.reasoning_effort.clone();
         app.enqueue_primary_thread_session(started.session, started.turns)
             .await
             .expect("primary thread should be registered");
@@ -5403,7 +5468,7 @@ async fn inactive_thread_settings_notification_updates_cached_collaboration_mode
             model: "gpt-plan".to_string(),
             model_provider: "openai".to_string(),
             service_tier: None,
-            effort: collaboration_mode.settings.reasoning_effort,
+            effort: collaboration_mode.settings.reasoning_effort.clone(),
             summary: None,
             collaboration_mode: collaboration_mode.clone(),
             personality: Some(Personality::Pragmatic),
@@ -5511,6 +5576,34 @@ async fn clear_only_ui_reset_preserves_chat_session_state() {
     assert!(!app.backtrack_render_pending);
     assert_eq!(app.chat_widget.thread_id(), Some(thread_id));
     assert_eq!(app.chat_widget.composer_text_with_pending(), "draft prompt");
+}
+
+#[tokio::test]
+async fn clear_only_ui_reset_allows_active_skill_warning_to_render_again() {
+    let mut app = make_test_app().await;
+    let error = SkillErrorInfo {
+        path: test_path_buf("/tmp/project/.codex/skills/abc/SKILL.md"),
+        message: "invalid description".to_string(),
+    };
+
+    assert_eq!(
+        app.skill_load_warnings
+            .newly_active_errors(std::slice::from_ref(&error)),
+        vec![error.clone()]
+    );
+    assert_eq!(
+        app.skill_load_warnings
+            .newly_active_errors(std::slice::from_ref(&error)),
+        Vec::<SkillErrorInfo>::new()
+    );
+
+    app.reset_app_ui_state_after_clear();
+
+    assert_eq!(
+        app.skill_load_warnings
+            .newly_active_errors(std::slice::from_ref(&error)),
+        vec![error]
+    );
 }
 
 #[tokio::test]

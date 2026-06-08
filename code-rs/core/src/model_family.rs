@@ -99,6 +99,9 @@ pub struct ModelFamily {
     /// Responses API.
     pub supports_parallel_tool_calls: bool,
 
+    /// Whether backend metadata says this model must use Responses Lite request semantics.
+    pub use_responses_lite: bool,
+
     /// Additional speed tiers advertised by the backend for this model.
     pub additional_speed_tiers: Vec<String>,
 
@@ -176,6 +179,7 @@ macro_rules! model_family {
             default_reasoning_effort: None,
             default_reasoning_summary: ReasoningSummary::Auto,
             supports_parallel_tool_calls: false,
+            use_responses_lite: false,
             additional_speed_tiers: Vec::new(),
             supports_search_tool: false,
             prefer_websockets: false,
@@ -209,17 +213,22 @@ fn apply_upstream_model_overrides(mut family: ModelFamily) -> ModelFamily {
     family.context_window = model_info
         .resolved_context_window()
         .and_then(|limit| u64::try_from(limit).ok());
-    family.default_reasoning_effort = model_info.default_reasoning_level.map(|effort| match effort {
-        code_protocol::openai_models::ReasoningEffort::None
-        | code_protocol::openai_models::ReasoningEffort::Minimal => ReasoningEffort::Minimal,
-        code_protocol::openai_models::ReasoningEffort::Low => ReasoningEffort::Low,
-        code_protocol::openai_models::ReasoningEffort::Medium => ReasoningEffort::Medium,
-        code_protocol::openai_models::ReasoningEffort::High => ReasoningEffort::High,
-        code_protocol::openai_models::ReasoningEffort::XHigh => ReasoningEffort::XHigh,
-    });
+    family.default_reasoning_effort = model_info
+        .default_reasoning_level
+        .as_ref()
+        .map(|effort| match effort {
+            code_protocol::openai_models::ReasoningEffort::None
+            | code_protocol::openai_models::ReasoningEffort::Minimal => ReasoningEffort::Minimal,
+            code_protocol::openai_models::ReasoningEffort::Low => ReasoningEffort::Low,
+            code_protocol::openai_models::ReasoningEffort::Medium => ReasoningEffort::Medium,
+            code_protocol::openai_models::ReasoningEffort::High => ReasoningEffort::High,
+            code_protocol::openai_models::ReasoningEffort::XHigh => ReasoningEffort::XHigh,
+            code_protocol::openai_models::ReasoningEffort::Custom(_) => ReasoningEffort::Medium,
+        });
     family.default_reasoning_summary = model_info.default_reasoning_summary.into();
     family.supports_reasoning_summaries = model_info.supports_reasoning_summaries;
     family.supports_parallel_tool_calls = model_info.supports_parallel_tool_calls;
+    family.use_responses_lite = model_info.use_responses_lite;
     if let Some(tool_type) = model_info.apply_patch_tool_type.as_ref() {
         family.apply_patch_tool_type = Some(match tool_type {
             code_protocol::openai_models::ApplyPatchToolType::Freeform => {
@@ -473,6 +482,7 @@ pub fn derive_default_model_family(model: &str) -> ModelFamily {
         default_reasoning_effort: None,
         default_reasoning_summary: ReasoningSummary::Auto,
         supports_parallel_tool_calls: false,
+        use_responses_lite: false,
         additional_speed_tiers: Vec::new(),
         supports_search_tool: false,
         prefer_websockets: false,
