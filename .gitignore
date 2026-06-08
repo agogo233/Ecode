@@ -49,6 +49,10 @@ code-rs/bin/
 /codex-rs/target/
 **/*.rs.bk
 
+# codex app server binaries (generated, should not be committed)
+sdk/python/src/codex_app_server/bin/
+.code-bin/
+
 # Local Cargo caches (never commit)
 # Keep anchored rules for root, and add unanchored patterns so nested workspaces
 # like codex-rs/.cargo-home are also ignored.
