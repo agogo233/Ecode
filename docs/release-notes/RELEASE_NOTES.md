@@ -1,24 +1,17 @@
-## @just-every/code v0.6.101
+## @just-every/code v0.6.108
 
-This release improves model routing, session workflows, plugin discovery, and execution reliability.
+This release refreshes V8 build metadata and improves CI stability for Bazel-backed builds.
 
 ### Changes
 
-- Models: update default agent routing, accept upstream tool-mode metadata, and fix Bedrock GPT service tiers.
-- CLI/Threads: add archive commands and keep resumed prompt history scoped to the session.
-- Plugins/Skills: improve connector and install suggestions, and add runtime extra skill roots.
-- Sandbox/Exec: preserve deny-read protections, tighten Windows requirements, and clean up filesystem helpers.
-- TUI/Tools: fix Vim editing, render multiline hook output, show web search activity, and finalize image generation natively.
+- Release: refresh V8 build metadata and Bazel patches for rusty_v8 149.2.0.
+- CI: route BuildBuddy secrets through the Bazel environment for steadier remote builds.
 
 ### Install
 
-```bash
+```
 npm install -g @just-every/code@latest
 code
 ```
 
-### Thanks
-
-Thanks to @owenlin0 for contributions!
-
-Compare: https://github.com/just-every/code/compare/v0.6.100...v0.6.101
+Compare: https://github.com/just-every/code/compare/v0.6.107...v0.6.108

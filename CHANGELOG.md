@@ -7,6 +7,44 @@
 
 - (none)
 
+## [0.6.108] - 2026-06-07
+
+- Release: refresh V8 build metadata and Bazel patches for rusty_v8 149.2.0. (43c2b00, b89ce9a)
+- CI: route BuildBuddy secrets through the Bazel environment for steadier remote builds. (2ee3358)
+
+## [0.6.107] - 2026-06-06
+
+- Models: send the Responses Lite transport header on streaming and compact requests. (7344aa90)
+
+## [0.6.106] - 2026-06-05
+
+- Models: honor Responses Lite metadata when selecting remote model behavior. (180829ab)
+- Release: improve Bazel and BuildBuddy workflow stability for release and CI runs. (1d9c9c9f, 4be1a16)
+- Release: add CI configuration push guidance and clean up Rust release workflow maintenance. (e695ec8e, 78eba34b)
+
+## [0.6.105] - 2026-06-05
+
+- Release: parallelize release note generation to reduce publish latency. (1b3c3f82)
+- Release: streamline the release workflow for steadier metadata preparation. (1b3c3f82)
+
+## [0.6.104] - 2026-06-05
+
+- Models: accept custom and model-advertised reasoning efforts with ordered TUI shortcuts. (8ac304c2, f6e52965, d1f6b465)
+- Plugins/App Server: expose remote MCP servers, marketplace source JSON, and `-c` config overrides. (769c231a, cdc1d592, 881cf191)
+- TUI: support F13-F24 keymaps, clarify shortcut overlays, and restore output-free cancelled prompts. (2f0726ad, 4e540b10, c0ea566b)
+- Core: preserve logical AGENTS.md paths and environment-backed instruction loading. (e64b469b, 59ca3420)
+- Runtime: improve standalone image path hints, rollout compression, and release build performance. (12e8764a, a8a60712, f97d5c32)
+
+## [0.6.103] - 2026-06-04
+
+- Hooks: add user prompt submit and stop project lifecycle hooks. (e5905129)
+- Core: enrich hook payloads with session, turn, transcript, and model metadata while preserving hook output order. (e5905129, 31254116)
+
+## [0.6.102] - 2026-06-04
+
+- Core: prevent strict providers from rejecting developer or custom chat roles. (d2bfa1ae)
+- Models: apply chat-role normalization only to providers that require it. (3320bb08)
+
 ## [0.6.101] - 2026-05-31
 
 - Models: update default agent routing, accept upstream tool-mode metadata, and fix Bedrock GPT service tiers. (f1d069bf, efc01e06, 96693212)

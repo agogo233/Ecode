@@ -11193,8 +11193,23 @@ impl ChatWidget<'_> {
 
     /// Push a cell using a synthetic key at the TOP of the NEXT request.
     fn history_push_top_next_req(&mut self, cell: impl HistoryCell + 'static) {
-        let key = self.next_req_key_top();
-        let _ = self.history_insert_with_key_global_tagged(Box::new(cell), key, "prelude", None);
+        if cell.kind() == HistoryCellType::BackgroundEvent {
+            let key = self.system_order_key(SystemPlacement::PrePromptInCurrent, None);
+            let _ = self.history_insert_with_key_global_tagged(
+                Box::new(cell),
+                key,
+                "background",
+                None,
+            );
+        } else {
+            let key = self.next_req_key_top();
+            let _ = self.history_insert_with_key_global_tagged(
+                Box::new(cell),
+                key,
+                "prelude",
+                None,
+            );
+        }
     }
     fn history_replace_with_record(
         &mut self,
@@ -23169,7 +23184,7 @@ Have we met every part of this goal and is there no further work to do?"#
     }
 
     fn preset_effort_for_model(preset: &ModelPreset) -> ReasoningEffort {
-        preset.default_reasoning_effort.into()
+        preset.default_reasoning_effort.clone().into()
     }
 
     fn clamp_reasoning_for_model(model: &str, requested: ReasoningEffort) -> ReasoningEffort {
@@ -23650,7 +23665,7 @@ Have we met every part of this goal and is there no further work to do?"#
         let supported: Vec<ReasoningEffort> = preset
             .supported_reasoning_efforts
             .iter()
-            .map(|opt| ReasoningEffort::from(opt.effort))
+            .map(|opt| ReasoningEffort::from(opt.effort.clone()))
             .collect();
         if supported.iter().any(|effort| *effort == requested) {
             return requested;
