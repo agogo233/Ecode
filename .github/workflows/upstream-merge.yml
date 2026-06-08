@@ -85,7 +85,7 @@ jobs:
 
       - name: Check out repository (full history)
         if: steps.active_guard.outputs.skip_due_to_active != 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6.0.2
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -182,7 +182,7 @@ jobs:
 
     steps:
       - name: Check out repository (full history)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6.0.2
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -1059,7 +1059,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Check out repository (full history)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6.0.2
         with:
           fetch-depth: 0
           persist-credentials: false
