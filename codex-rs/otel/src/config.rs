@@ -13,23 +13,9 @@ pub(crate) const STATSIG_API_KEY: &str = "client-MkRuleRQBd6qakfnDYqJVR9JuXcY57L
 pub(crate) fn resolve_exporter(exporter: &OtelExporter) -> OtelExporter {
     match exporter {
         OtelExporter::Statsig => {
-            // Keep the built-in Statsig default off in debug builds so
-            // incremental local development and test runs do not emit
-            // best-effort OTEL traffic unless a test or binary opts into an
-            // explicit exporter configuration.
-            if cfg!(debug_assertions) {
-                return OtelExporter::None;
-            }
-
-            OtelExporter::OtlpHttp {
-                endpoint: STATSIG_OTLP_HTTP_ENDPOINT.to_string(),
-                headers: HashMap::from([(
-                    STATSIG_API_KEY_HEADER.to_string(),
-                    STATSIG_API_KEY.to_string(),
-                )]),
-                protocol: OtelHttpProtocol::Json,
-                tls: None,
-            }
+            // Telemetry disabled by default for privacy.
+            // Users can explicitly enable by configuring an exporter in config.toml.
+            OtelExporter::None
         }
         _ => exporter.clone(),
     }

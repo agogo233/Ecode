@@ -1,3 +1,24 @@
 model = "gpt-5.1"
 
-# Consider setting [mcp_servers] here!
+# 安全与隐私配置
+# 禁用遥测
+[otel]
+exporter = "none"
+trace-exporter = "none"
+metrics-exporter = "none"
+log-user-prompt = false
+environment = "local"
+
+# 沙箱配置
+sandbox-mode = "workspace-write"
+
+[sandbox-workspace-write]
+writable-roots = ["."]
+network-access = false
+
+# 排除敏感环境变量
+[shell-environment-policy]
+inherit = "all"
+exclude = ["*SECRET*", "*PASSWORD*", "*CREDENTIAL*", "*API_KEY*", "*TOKEN*"]
+
+# 考虑在此处配置 [mcp_servers]!
