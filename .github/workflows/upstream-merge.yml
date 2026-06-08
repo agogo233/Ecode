@@ -270,7 +270,7 @@ jobs:
 
       - name: Cache ripgrep binary
         if: steps.check_upstream.outputs.skip != 'true'
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.local/tools/rg-${{ env.RG_VERSION }}
           key: rg-${{ runner.os }}-${{ env.RG_VERSION }}
@@ -295,7 +295,7 @@ jobs:
 
       - name: Cache jq binary
         if: steps.check_upstream.outputs.skip != 'true'
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.local/tools/jq-${{ env.JQ_VERSION }}
           key: jq-${{ runner.os }}-${{ env.JQ_VERSION }}
@@ -358,7 +358,7 @@ jobs:
 
       - name: Cache npm (npx) downloads
         if: steps.check_upstream.outputs.skip != 'true'
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.npm
