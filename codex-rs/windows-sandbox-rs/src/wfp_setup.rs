@@ -53,7 +53,7 @@ fn build_wfp_metrics_provider(
         codex_home: codex_home.to_path_buf(),
         exporter: OtelExporter::None,
         trace_exporter: OtelExporter::None,
-        metrics_exporter: OtelExporter::Statsig,
+        metrics_exporter: OtelExporter::None,
         runtime_metrics: false,
         span_attributes: BTreeMap::new(),
         tracestate: BTreeMap::new(),
