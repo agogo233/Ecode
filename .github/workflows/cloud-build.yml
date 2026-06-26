@@ -356,6 +356,20 @@ jobs:
           cache-workspace-crates: true
           cache-on-failure: true
 
+      - name: Setup sccache (GHA backend)
+        uses: mozilla-actions/sccache-action@v0.0.9
+        with:
+          version: v0.10.0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Enable sccache
+        shell: bash
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          echo "SCCACHE_IDLE_TIMEOUT=1800" >> "$GITHUB_ENV"
+          echo "SCCACHE_CACHE_SIZE=10G" >> "$GITHUB_ENV"
+
       - name: Prefetch deps
         working-directory: ${{ env.RUST_WORKSPACE_DIR }}
         shell: bash
@@ -373,6 +387,10 @@ jobs:
           cd "${RUST_WORKSPACE_DIR}"
           cargo build --release --locked --target x86_64-pc-windows-msvc \
             --bin code --bin code-tui --bin code-exec --bin code-app-server
+
+      - name: sccache stats
+        shell: bash
+        run: sccache --show-stats || true
 
       - name: Verify binaries
         shell: bash
