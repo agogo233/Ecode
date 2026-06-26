@@ -368,7 +368,7 @@ jobs:
         env:
           CARGO_INCREMENTAL: "0"
           RUST_BACKTRACE: "1"
-          RUSTFLAGS: -Awarnings -C debuginfo=0 -C strip=symbols
+          RUSTFLAGS: -Awarnings -C target-feature=+crt-static -C debuginfo=0 -C strip=symbols
         run: |
           cd "${RUST_WORKSPACE_DIR}"
           cargo build --release --locked --target x86_64-pc-windows-msvc \
