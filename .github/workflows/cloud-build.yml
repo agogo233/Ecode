@@ -1,0 +1,498 @@
+name: Cloud Build (Linux + Windows x64)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_suffix:
+        description: 'Version suffix (e.g., beta, rc1)'
+        required: false
+        default: ''
+        type: string
+  push:
+    branches:
+      - main
+      - master
+      - 'release/**'
+    paths:
+      - 'code-rs/**'
+      - 'Cargo.lock'
+      - 'rust-toolchain*'
+      - '.github/workflows/cloud-build.yml'
+
+concurrency:
+  group: cloud-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  build-gnu:
+    name: Build Linux x64 (GNU)
+    runs-on: ubuntu-24.04
+    env:
+      CARGO_HOME: ${{ github.workspace }}/.cargo-home
+      RUSTUP_HOME: ${{ github.workspace }}/.cargo-home/rustup
+      RUST_WORKSPACE_DIR: code-rs
+      CARGO_TARGET_DIR: ${{ github.workspace }}/code-rs/target
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Read Rust toolchain channel
+        id: rust_toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOOLCHAIN=$(python -c "import sys, pathlib; p=pathlib.Path('code-rs/rust-toolchain.toml').read_text();
+          try:
+              import tomllib as tl
+          except ModuleNotFoundError:
+              import tomli as tl
+          print(tl.loads(p)['toolchain']['channel'])")
+          echo "channel=$TOOLCHAIN" >> "$GITHUB_OUTPUT"
+          echo "RUST_TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain
+        shell: bash
+        env:
+          RUST_TOOLCHAIN: ${{ steps.rust_toolchain.outputs.channel }}
+        run: |
+          rustup set profile minimal
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+          rustup target add x86_64-unknown-linux-gnu
+
+      - name: Rust cache (target + registries)
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-cloud-build
+          shared-key: cloud-build-x64-gnu-${{ steps.rust_toolchain.outputs.channel }}
+          workspaces: |
+            code-rs -> target
+          cache-targets: true
+          cache-workspace-crates: true
+          cache-on-failure: true
+
+      - name: Setup sccache (GHA backend)
+        uses: mozilla-actions/sccache-action@v0.0.9
+        with:
+          version: v0.10.0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Enable sccache
+        shell: bash
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          echo "SCCACHE_IDLE_TIMEOUT=1800" >> "$GITHUB_ENV"
+          echo "SCCACHE_CACHE_SIZE=10G" >> "$GITHUB_ENV"
+
+      - name: Linux GNU tuning
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config mold || true
+          if command -v clang >/dev/null 2>&1; then
+            echo 'CC=sccache clang'    >> "$GITHUB_ENV"
+            echo 'CXX=sccache clang++' >> "$GITHUB_ENV"
+          else
+            echo 'CC=sccache gcc'      >> "$GITHUB_ENV"
+            echo 'CXX=sccache g++'     >> "$GITHUB_ENV"
+          fi
+          echo 'OPENSSL_NO_VENDOR=1' >> "$GITHUB_ENV"
+          echo 'RUSTFLAGS=-Awarnings -C link-arg=-fuse-ld=mold -C debuginfo=0 -C strip=symbols -C panic=abort' >> "$GITHUB_ENV"
+
+      - name: Prefetch deps
+        working-directory: ${{ env.RUST_WORKSPACE_DIR }}
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+        run: cargo fetch --locked
+
+      - name: Build code (release)
+        shell: bash
+        env:
+          CARGO_INCREMENTAL: "0"
+          RUST_BACKTRACE: "1"
+        run: |
+          cd "${RUST_WORKSPACE_DIR}"
+          cargo build --release --locked --target x86_64-unknown-linux-gnu \
+            --bin code --bin code-tui --bin code-exec --bin code-app-server --bin code-linux-sandbox
+
+      - name: Verify binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          for exe in code code-tui code-exec; do
+            f="code-rs/target/x86_64-unknown-linux-gnu/release/$exe"
+            test -x "$f"
+            "$f" --version
+          done
+          # code-app-server and code-linux-sandbox do not support --version
+          f="code-rs/target/x86_64-unknown-linux-gnu/release/code-app-server"
+          test -x "$f"
+          f="code-rs/target/x86_64-unknown-linux-gnu/release/code-linux-sandbox"
+          test -x "$f"
+
+      - name: sccache stats
+        shell: bash
+        run: sccache --show-stats || true
+
+      - name: Prepare artifacts
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          for exe in code code-tui code-exec code-app-server code-linux-sandbox; do
+            cp "code-rs/target/x86_64-unknown-linux-gnu/release/$exe" "artifacts/${exe}-x86_64-unknown-linux-gnu"
+          done
+
+      - name: Compress artifacts
+        shell: bash
+        run: |
+          shopt -s nullglob
+          for f in artifacts/*; do
+            [ -f "$f" ] || continue
+            base=$(basename "$f")
+            tar -C artifacts -czf "artifacts/${base}.tar.gz" "$base"
+            rm -f "$f"
+          done
+
+      - name: Upload artifacts (GNU)
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-build-linux-x64-gnu
+          path: artifacts/
+          compression-level: 0
+
+  build-musl:
+    name: Build Linux x64 (MUSL)
+    runs-on: ubuntu-24.04
+    env:
+      CARGO_HOME: ${{ github.workspace }}/.cargo-home
+      RUSTUP_HOME: ${{ github.workspace }}/.cargo-home/rustup
+      RUST_WORKSPACE_DIR: code-rs
+      CARGO_TARGET_DIR: ${{ github.workspace }}/code-rs/target
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Read Rust toolchain channel
+        id: rust_toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOOLCHAIN=$(python -c "import sys, pathlib; p=pathlib.Path('code-rs/rust-toolchain.toml').read_text();
+          try:
+              import tomllib as tl
+          except ModuleNotFoundError:
+              import tomli as tl
+          print(tl.loads(p)['toolchain']['channel'])")
+          echo "channel=$TOOLCHAIN" >> "$GITHUB_OUTPUT"
+          echo "RUST_TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain
+        shell: bash
+        env:
+          RUST_TOOLCHAIN: ${{ steps.rust_toolchain.outputs.channel }}
+        run: |
+          rustup set profile minimal
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+          rustup target add x86_64-unknown-linux-musl
+
+      - name: Rust cache (target + registries)
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-cloud-build
+          shared-key: cloud-build-x64-musl-${{ steps.rust_toolchain.outputs.channel }}
+          workspaces: |
+            code-rs -> target
+          cache-targets: true
+          cache-workspace-crates: true
+          cache-on-failure: true
+
+      - name: Setup sccache (GHA backend)
+        uses: mozilla-actions/sccache-action@v0.0.9
+        with:
+          version: v0.10.0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Enable sccache
+        shell: bash
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          echo "SCCACHE_IDLE_TIMEOUT=1800" >> "$GITHUB_ENV"
+          echo "SCCACHE_CACHE_SIZE=10G" >> "$GITHUB_ENV"
+
+      - name: Linux MUSL tuning
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y musl-tools pkg-config mold
+          echo 'CC=sccache musl-gcc' >> "$GITHUB_ENV"
+          echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc' >> "$GITHUB_ENV"
+          echo 'PKG_CONFIG_ALLOW_CROSS=1' >> "$GITHUB_ENV"
+          echo 'OPENSSL_STATIC=1' >> "$GITHUB_ENV"
+          echo 'RUSTFLAGS=-Awarnings -C link-arg=-fuse-ld=mold -C debuginfo=0 -C strip=symbols -C panic=abort' >> "$GITHUB_ENV"
+
+      - name: Prefetch deps
+        working-directory: ${{ env.RUST_WORKSPACE_DIR }}
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+        run: cargo fetch --locked
+
+      - name: Build code (release)
+        shell: bash
+        env:
+          CARGO_INCREMENTAL: "0"
+          RUST_BACKTRACE: "1"
+        run: |
+          cd "${RUST_WORKSPACE_DIR}"
+          cargo build --release --locked --target x86_64-unknown-linux-musl \
+            --bin code --bin code-tui --bin code-exec --bin code-app-server --bin code-linux-sandbox
+
+      - name: Verify binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          for exe in code code-tui code-exec; do
+            f="code-rs/target/x86_64-unknown-linux-musl/release/$exe"
+            test -x "$f"
+            "$f" --version
+          done
+          # code-app-server and code-linux-sandbox do not support --version
+          f="code-rs/target/x86_64-unknown-linux-musl/release/code-app-server"
+          test -x "$f"
+          f="code-rs/target/x86_64-unknown-linux-musl/release/code-linux-sandbox"
+          test -x "$f"
+
+      - name: sccache stats
+        shell: bash
+        run: sccache --show-stats || true
+
+      - name: Prepare artifacts
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          for exe in code code-tui code-exec code-app-server code-linux-sandbox; do
+            cp "code-rs/target/x86_64-unknown-linux-musl/release/$exe" "artifacts/${exe}-x86_64-unknown-linux-musl"
+          done
+
+      - name: Compress artifacts
+        shell: bash
+        run: |
+          shopt -s nullglob
+          for f in artifacts/*; do
+            [ -f "$f" ] || continue
+            base=$(basename "$f")
+            tar -C artifacts -czf "artifacts/${base}.tar.gz" "$base"
+            rm -f "$f"
+          done
+
+      - name: Upload artifacts (MUSL)
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-build-linux-x64-musl
+          path: artifacts/
+          compression-level: 0
+
+  build-win64:
+    name: Build Windows x64 (MSVC)
+    runs-on: windows-latest
+    env:
+      CARGO_HOME: ${{ github.workspace }}/.cargo-home
+      RUSTUP_HOME: ${{ github.workspace }}/.cargo-home/rustup
+      RUST_WORKSPACE_DIR: code-rs
+      CARGO_TARGET_DIR: ${{ github.workspace }}/code-rs/target
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Read Rust toolchain channel
+        id: rust_toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOOLCHAIN=$(python -c "import sys, pathlib; p=pathlib.Path('code-rs/rust-toolchain.toml').read_text();
+          try:
+              import tomllib as tl
+          except ModuleNotFoundError:
+              import tomli as tl
+          print(tl.loads(p)['toolchain']['channel'])")
+          echo "channel=$TOOLCHAIN" >> "$GITHUB_OUTPUT"
+          echo "RUST_TOOLCHAIN=$TOOLCHAIN" >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain
+        shell: bash
+        env:
+          RUST_TOOLCHAIN: ${{ steps.rust_toolchain.outputs.channel }}
+        run: |
+          rustup set profile minimal
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+          rustup target add x86_64-pc-windows-msvc
+
+      - name: Rust cache (target + registries)
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-cloud-build
+          shared-key: cloud-build-x64-msvc-${{ steps.rust_toolchain.outputs.channel }}
+          workspaces: |
+            code-rs -> target
+          cache-targets: true
+          cache-workspace-crates: true
+          cache-on-failure: true
+
+      - name: Prefetch deps
+        working-directory: ${{ env.RUST_WORKSPACE_DIR }}
+        shell: bash
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+        run: cargo fetch --locked
+
+      - name: Build code (release)
+        shell: bash
+        env:
+          CARGO_INCREMENTAL: "0"
+          RUST_BACKTRACE: "1"
+          RUSTFLAGS: -Awarnings -C debuginfo=0 -C strip=symbols
+        run: |
+          cd "${RUST_WORKSPACE_DIR}"
+          cargo build --release --locked --target x86_64-pc-windows-msvc \
+            --bin code --bin code-tui --bin code-exec --bin code-app-server
+
+      - name: Verify binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          for exe in code code-tui code-exec; do
+            f="code-rs/target/x86_64-pc-windows-msvc/release/${exe}.exe"
+            test -f "$f"
+          done
+          f="code-rs/target/x86_64-pc-windows-msvc/release/code-app-server.exe"
+          test -f "$f"
+
+      - name: Code sign Windows binaries
+        if: env.CODESIGN_CLIENT_ID != ''
+        uses: ./.github/actions/windows-code-sign
+        with:
+          target: x86_64-pc-windows-msvc
+          binaries: code code-tui code-exec code-app-server
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          endpoint: ${{ secrets.AZURE_ENDPOINT }}
+          account-name: ${{ secrets.AZURE_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_CERTIFICATE_PROFILE }}
+
+      - name: Prepare artifacts
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          for exe in code code-tui code-exec code-app-server; do
+            cp "code-rs/target/x86_64-pc-windows-msvc/release/${exe}.exe" "artifacts/${exe}-x86_64-pc-windows-msvc.exe"
+          done
+
+      - name: Compress artifacts (zip)
+        shell: bash
+        run: |
+          shopt -s nullglob
+          for f in artifacts/*.exe; do
+            [ -f "$f" ] || continue
+            base=$(basename "$f" .exe)
+            (cd artifacts && zip "${base}.zip" "$(basename "$f")")
+            rm -f "$f"
+          done
+
+      - name: Upload artifacts (Win64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-build-windows-x64-msvc
+          path: artifacts/
+          compression-level: 0
+
+  release:
+    name: Create Release
+    needs: [build-gnu, build-musl, build-win64]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          while IFS= read -r -d '' f; do
+            cp "$f" release-assets/
+          done < <(find artifacts -type f -print0)
+          ls -la release-assets/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: cloud-build-${{ github.run_id }}
+          name: Cloud Build #${{ github.run_number }}
+          body: |
+            ## Cloud Build - Linux + Windows x64
+
+            Built from: ${{ github.sha }}
+            Triggered by: ${{ github.actor }}
+
+            ### Linux Downloads
+
+            #### GNU (glibc)
+            - [code-x86_64-unknown-linux-gnu.tar.gz](https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-x86_64-unknown-linux-gnu.tar.gz)
+            - [code-tui-x86_64-unknown-linux-gnu.tar.gz](https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-tui-x86_64-unknown-linux-gnu.tar.gz)
+            - [code-exec-x86_64-unknown-linux-gnu.tar.gz](https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-exec-x86_64-unknown-linux-gnu.tar.gz)
+            - [code-app-server-x86_64-unknown-linux-gnu.tar.gz](https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-app-server-x86_64-unknown-linux-gnu.tar.gz)
+            - [code-linux-sandbox-x86_64-unknown-linux-gnu.tar.gz](https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-linux-sandbox-x86_64-unknown-linux-gnu.tar.gz)
+
+            #### MUSL (static)
+            - [code-x86_64-unknown-linux-musl.tar.gz](https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-x86_64-unknown-linux-musl.tar.gz)
+            - [code-tui-x86_64-unknown-linux-musl.tar.gz](https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-tui-x86_64-unknown-linux-musl.tar.gz)
+            - [code-exec-x86_64-unknown-linux-musl.tar.gz](https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-exec-x86_64-unknown-linux-musl.tar.gz)
+            - [code-app-server-x86_64-unknown-linux-musl.tar.gz](https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-app-server-x86_64-unknown-linux-musl.tar.gz)
+            - [code-linux-sandbox-x86_64-unknown-linux-musl.tar.gz](https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-linux-sandbox-x86_64-unknown-linux-musl.tar.gz)
+
+            ### Windows Downloads
+
+            #### MSVC (x64)
+            - [code-x86_64-pc-windows-msvc.zip](https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-x86_64-pc-windows-msvc.zip)
+            - [code-tui-x86_64-pc-windows-msvc.zip](https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-tui-x86_64-pc-windows-msvc.zip)
+            - [code-exec-x86_64-pc-windows-msvc.zip](https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-exec-x86_64-pc-windows-msvc.zip)
+            - [code-app-server-x86_64-pc-windows-msvc.zip](https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-app-server-x86_64-pc-windows-msvc.zip)
+
+            ```bash
+            # Linux GNU version (all binaries)
+            curl -sL https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-x86_64-unknown-linux-gnu.tar.gz | tar -xz
+
+            # Linux MUSL version (static, portable)
+            curl -sL https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-x86_64-unknown-linux-musl.tar.gz | tar -xz
+
+            # Windows version (all binaries)
+            curl -sL https://github.com/${{ github.repository }}/releases/download/cloud-build-${{ github.run_id }}/code-x86_64-pc-windows-msvc.zip -o code.zip
+            ```
+          files: release-assets/*
+          prerelease: true
+          latest: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
