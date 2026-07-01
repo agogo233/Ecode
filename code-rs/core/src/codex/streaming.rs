@@ -586,38 +586,7 @@ pub(super) async fn submission_loop(
                     manager.set_debug_log_root(None);
                 }
 
-                let conversation_id = code_protocol::mcp_protocol::ConversationId::from(session_id);
-                let auth_snapshot = auth_manager.as_ref().and_then(|mgr| mgr.auth());
-                let otel_event_manager = {
-                    let manager = OtelEventManager::new(
-                        conversation_id,
-                        config.model.as_str(),
-                        config.model_family.slug.as_str(),
-                        auth_snapshot
-                            .as_ref()
-                            .and_then(|auth| auth.get_account_id()),
-                        auth_snapshot.as_ref().map(|auth| auth.mode),
-                        config.otel.log_user_prompt,
-                        crate::terminal::user_agent(),
-                    );
-                    manager.conversation_starts(
-                        config.model_provider.name.as_str(),
-                        Some(to_proto_reasoning_effort(model_reasoning_effort)),
-                        to_proto_reasoning_summary(model_reasoning_summary),
-                        config.model_context_window,
-                        config.model_max_output_tokens,
-                        config.model_auto_compact_token_limit,
-                        to_proto_approval_policy(approval_policy),
-                        to_proto_sandbox_policy(sandbox_policy.clone()),
-                        config
-                            .mcp_servers
-                            .keys()
-                            .map(String::as_str)
-                            .collect(),
-                        config.active_profile.clone(),
-                    );
-                    manager
-                };
+                let otel_event_manager = None;
 
                 // Wrap provided auth (if any) in a minimal AuthManager for client usage.
                 let client = ModelClient::new(
@@ -3784,6 +3753,7 @@ mod turn_validation_tests {
             status: None,
             call_id: "call_custom".to_string(),
             name: "custom".to_string(),
+            namespace: None,
             input: "{}".to_string(),
         };
 
@@ -4760,12 +4730,23 @@ async fn handle_response_item(
             .await,
             )
         }
-        ResponseItem::CustomToolCall { call_id, name, .. } => {
+        ResponseItem::CustomToolCall {
+            call_id,
+            name,
+            namespace,
+            ..
+        } => {
             // Minimal placeholder: custom tools are not handled here.
+            let display_name = namespace
+                .as_deref()
+                .map(|namespace| format!("{namespace}.{name}"))
+                .unwrap_or_else(|| name.clone());
             Some(ResponseInputItem::FunctionCallOutput {
                 call_id,
                 output: FunctionCallOutputPayload {
-                    body: code_protocol::models::FunctionCallOutputBody::Text(format!("Custom tool '{name}' is not supported in this build")),
+                    body: code_protocol::models::FunctionCallOutputBody::Text(format!(
+                        "Custom tool '{display_name}' is not supported in this build"
+                    )),
                     success: Some(false)},
             })
         }

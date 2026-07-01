@@ -188,6 +188,24 @@ impl MetricsClientInner {
         Ok(())
     }
 
+    fn register_observable_gauge(
+        &self,
+        name: &str,
+        description: &str,
+        observe: impl Fn() -> i64 + Send + Sync + 'static,
+        tags: &[(&str, &str)],
+    ) -> Result<()> {
+        validate_metric_name(name)?;
+        let attributes = self.attributes(tags)?;
+        let _gauge = self
+            .meter
+            .i64_observable_gauge(name.to_string())
+            .with_description(description.to_string())
+            .with_callback(move |observer| observer.observe(observe(), &attributes))
+            .build();
+        Ok(())
+    }
+
     fn duration_histogram(
         &self,
         name: &str,
@@ -354,6 +372,18 @@ impl MetricsClient {
         self.0.gauge(name, Some(description), value, tags)
     }
 
+    /// Register a gauge callback that reports the current value on every collection.
+    pub fn register_observable_gauge_with_description(
+        &self,
+        name: &str,
+        description: &str,
+        observe: impl Fn() -> i64 + Send + Sync + 'static,
+        tags: &[(&str, &str)],
+    ) -> Result<()> {
+        self.0
+            .register_observable_gauge(name, description, observe, tags)
+    }
+
     /// Record a duration in milliseconds using a histogram.
     pub fn record_duration(
         &self,
@@ -459,7 +489,11 @@ fn build_otlp_metric_exporter(
     temporality: Temporality,
 ) -> Result<opentelemetry_otlp::MetricExporter> {
     match exporter {
-        OtelExporter::None | OtelExporter::Statsig => Err(MetricsError::ExporterDisabled),
+        OtelExporter::None => Err(MetricsError::ExporterDisabled),
+        OtelExporter::Statsig => build_otlp_metric_exporter(
+            crate::config::resolve_exporter(&OtelExporter::Statsig),
+            temporality,
+        ),
         OtelExporter::OtlpGrpc {
             endpoint,
             headers,

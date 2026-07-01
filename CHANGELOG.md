@@ -7,6 +7,25 @@
 
 - (none)
 
+## [0.6.134] - 2026-06-30
+
+- Docs: fix README grammar for clearer command guidance. (073762b7, 1b312434)
+- Release: refresh upstream history for v0.6.134. (6505a30b)
+
+## [0.6.133] - 2026-06-29
+
+- Core: backport upstream model metadata parity for improved model selection. (cfc7b53f)
+- Core: accept legacy default service tier values in configuration. (a709ae97)
+- Tools: preserve custom tool namespaces across streamed responses. (291b2c3c)
+- Dependencies: update OpenTelemetry SDK to resolve alert 120. (f0875be1)
+
+## [0.6.132] - 2026-06-24
+
+- CI: fail jobs when generated changes dirty the worktree. (93c79046)
+- Docs: expand remote executor integration testing guidance. (31e428a1)
+- Testing: improve cross-platform app-server coverage with Wine and target-OS branching. (b17f30eb, 9a79536e)
+- Release: refresh upstream history while preserving JustEvery workflows. (a43f633e, 5ec23059)
+
 ## [0.6.131] - 2026-06-23
 
 - Core: backport upstream Responses Lite parity for improved API compatibility. (f9fe914a)
