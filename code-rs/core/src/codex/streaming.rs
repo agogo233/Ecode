@@ -586,13 +586,12 @@ pub(super) async fn submission_loop(
                     manager.set_debug_log_root(None);
                 }
 
-                let otel_event_manager = None;
 
                 // Wrap provided auth (if any) in a minimal AuthManager for client usage.
                 let client = ModelClient::new(
                     config.clone(),
                     auth_manager.clone(),
-                    Some(otel_event_manager.clone()),
+                    None,
                     provider.clone(),
                     model_reasoning_effort,
                     model_reasoning_summary,
