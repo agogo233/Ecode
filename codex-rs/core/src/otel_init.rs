@@ -65,12 +65,21 @@ pub fn build_provider(
         },
     };
 
-    let exporter = to_otel_exporter(&config.otel.exporter);
-    let trace_exporter = to_otel_exporter(&config.otel.trace_exporter);
-    let metrics_exporter = if config
+    let analytics_enabled = config
         .analytics_enabled
-        .unwrap_or(default_analytics_enabled)
-    {
+        .unwrap_or(default_analytics_enabled);
+
+    let exporter = if analytics_enabled {
+        to_otel_exporter(&config.otel.exporter)
+    } else {
+        OtelExporter::None
+    };
+    let trace_exporter = if analytics_enabled {
+        to_otel_exporter(&config.otel.trace_exporter)
+    } else {
+        OtelExporter::None
+    };
+    let metrics_exporter = if analytics_enabled {
         to_otel_exporter(&config.otel.metrics_exporter)
     } else {
         OtelExporter::None
