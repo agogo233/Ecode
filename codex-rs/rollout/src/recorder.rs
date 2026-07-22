@@ -1730,7 +1730,6 @@ async fn rollout_writer(
         match cmd {
             RolloutCmd::AddItems(items) => {
                 state.add_items(items);
-                state.flush_if_materialized().await;
             }
             RolloutCmd::Persist { ack } => {
                 let _ = ack.send(state.persist().await);
@@ -1794,7 +1793,8 @@ pub async fn append_rollout_item_to_path(
         .open(rollout_path)
         .await?;
     let mut writer = JsonlWriter { file };
-    writer.write_rollout_item(item).await
+    writer.write_rollout_item(item).await?;
+    writer.file.flush().await
 }
 
 struct JsonlWriter {
@@ -1826,9 +1826,7 @@ impl JsonlWriter {
     async fn write_line(&mut self, item: &impl serde::Serialize) -> std::io::Result<()> {
         let mut json = serde_json::to_string(item)?;
         json.push('\n');
-        self.file.write_all(json.as_bytes()).await?;
-        self.file.flush().await?;
-        Ok(())
+        self.file.write_all(json.as_bytes()).await
     }
 }
 

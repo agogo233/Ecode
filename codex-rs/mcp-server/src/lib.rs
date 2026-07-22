@@ -51,7 +51,7 @@ pub use crate::patch_approval::PatchApprovalResponse;
 /// is a balance between throughput and memory usage – 128 messages should be
 /// plenty for an interactive CLI.
 const CHANNEL_CAPACITY: usize = 128;
-const DEFAULT_ANALYTICS_ENABLED: bool = true;
+const DEFAULT_ANALYTICS_ENABLED: bool = false;
 const OTEL_SERVICE_NAME: &str = "codex_mcp_server";
 
 type IncomingMessage = JsonRpcMessage<ClientRequest, Value, ClientNotification>;
@@ -212,8 +212,8 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn mcp_server_defaults_analytics_to_enabled() {
-        assert_eq!(DEFAULT_ANALYTICS_ENABLED, true);
+    fn mcp_server_defaults_analytics_to_disabled() {
+        assert_eq!(DEFAULT_ANALYTICS_ENABLED, false);
     }
 
     #[tokio::test]

@@ -160,7 +160,7 @@ use uuid::Uuid;
 use crate::cli::Command as ExecCommand;
 use crate::event_processor::EventProcessor;
 
-const DEFAULT_ANALYTICS_ENABLED: bool = true;
+const DEFAULT_ANALYTICS_ENABLED: bool = false;
 const EXEC_DEFAULT_LOG_FILTER: &str = "error,opentelemetry_sdk=off,opentelemetry_otlp=off";
 
 enum InitialOperation {
