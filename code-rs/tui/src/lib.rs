@@ -1300,6 +1300,9 @@ pub enum LoginStatus {
 
 /// Determine current login status based on auth.json presence.
 pub fn get_login_status(config: &Config) -> LoginStatus {
+    if config.model_provider_id != "openai" {
+        return LoginStatus::AuthMode(AuthMode::ApiKey);
+    }
     let code_home = config.code_home.clone();
     match CodexAuth::from_code_home(&code_home, AuthMode::ChatGPT, &config.responses_originator_header) {
         Ok(Some(auth)) => LoginStatus::AuthMode(auth.mode),
