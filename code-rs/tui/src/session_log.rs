@@ -61,13 +61,22 @@ impl SessionLogger {
                 }
                 if let Err(e) = guard.write_all(b"\n") {
                     tracing::warn!("session log write error: {}", e);
-                    return;
-                }
-                if let Err(e) = guard.flush() {
-                    tracing::warn!("session log flush error: {}", e);
                 }
             }
             Err(e) => tracing::warn!("session log serialize error: {}", e),
+        }
+    }
+
+    fn flush(&self) {
+        let Some(mutex) = self.file.get() else {
+            return;
+        };
+        let mut guard = match mutex.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Err(e) = guard.flush() {
+            tracing::warn!("session log flush error: {}", e);
         }
     }
 
@@ -368,6 +377,7 @@ pub(crate) fn log_session_end() {
         "kind": "session_end",
     });
     LOGGER.write_json_line(value);
+    LOGGER.flush();
 }
 
 pub(crate) fn log_panic(

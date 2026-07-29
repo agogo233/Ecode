@@ -2,8 +2,8 @@ use chrono::Local;
 use code_otel::otel_event_manager::TurnLatencyPayload;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs::{self, File, OpenOptions};
+use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use uuid::Uuid;
@@ -18,12 +18,11 @@ struct StreamInfo {
 pub struct DebugLogger {
     enabled: bool,
     log_dir: PathBuf,
-    // Maps request_id to stream info for collecting events
     active_streams: Mutex<HashMap<String, StreamInfo>>,
     usage_dir: PathBuf,
-    session_usage_file: Mutex<PathBuf>,
+    session_usage_writer: Mutex<Option<BufWriter<File>>>,
     turn_latency_dir: PathBuf,
-    turn_latency_file: Mutex<Option<PathBuf>>,
+    turn_latency_writer: Mutex<Option<BufWriter<File>>>,
 }
 
 impl DebugLogger {
@@ -34,9 +33,9 @@ impl DebugLogger {
                 log_dir: PathBuf::new(),
                 active_streams: Mutex::new(HashMap::new()),
                 usage_dir: PathBuf::new(),
-                session_usage_file: Mutex::new(PathBuf::new()),
+                session_usage_writer: Mutex::new(None),
                 turn_latency_dir: PathBuf::new(),
-                turn_latency_file: Mutex::new(None),
+                turn_latency_writer: Mutex::new(None),
             });
         }
 
@@ -57,9 +56,9 @@ impl DebugLogger {
             log_dir,
             active_streams: Mutex::new(HashMap::new()),
             usage_dir,
-            session_usage_file: Mutex::new(PathBuf::new()),
+            session_usage_writer: Mutex::new(None),
             turn_latency_dir,
-            turn_latency_file: Mutex::new(None),
+            turn_latency_writer: Mutex::new(None),
         })
     }
 
@@ -220,28 +219,15 @@ impl DebugLogger {
             return Ok(());
         }
 
-        let path = {
-            let guard = self
-                .session_usage_file
-                .lock()
-                .expect("usage lock poisoned");
-            if guard.as_os_str().is_empty() {
-                return Ok(());
-            }
-            guard.clone()
-        };
-
-        let mut entries: Vec<Value> = if path.exists() {
-            let contents = fs::read_to_string(&path)?;
-            serde_json::from_str(&contents).unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-
-        entries.push(usage);
-
-        let formatted = serde_json::to_string_pretty(&entries)?;
-        fs::write(path, formatted)?;
+        let mut guard = self
+            .session_usage_writer
+            .lock()
+            .expect("usage writer lock poisoned");
+        if let Some(ref mut writer) = *guard {
+            let line = serde_json::to_string(&usage)?;
+            writeln!(writer, "{}", line)?;
+            writer.flush()?;
+        }
         Ok(())
     }
 
@@ -252,27 +238,29 @@ impl DebugLogger {
 
         let session_id_str = session_id.to_string();
         let path = if let Some(existing) = self.find_existing_usage_log(&session_id_str) {
+            if let Some(parent) = existing.parent() {
+                fs::create_dir_all(parent)?;
+            }
             existing
         } else {
             let timestamp = Local::now().format("%Y%m%d_%H%M%S%.3f");
             self
                 .usage_dir
-                .join(format!("{}_{}_usage.json", timestamp, session_id_str))
+                .join(format!("{}_{}_usage.jsonl", timestamp, session_id_str))
         };
 
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
 
-        if !path.exists() {
-            fs::write(&path, "[]")?;
-        }
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        let writer = BufWriter::new(file);
 
         let mut guard = self
-            .session_usage_file
+            .session_usage_writer
             .lock()
-            .expect("usage lock poisoned");
-        *guard = path;
+            .expect("usage writer lock poisoned");
+        *guard = Some(writer);
 
         self.set_turn_latency_file(session_id)
     }
@@ -289,14 +277,14 @@ impl DebugLogger {
             fs::create_dir_all(parent)?;
         }
 
-        // Ensure file exists so tail -f works immediately.
-        OpenOptions::new().create(true).append(true).open(&path)?;
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        let writer = BufWriter::new(file);
 
         let mut guard = self
-            .turn_latency_file
+            .turn_latency_writer
             .lock()
-            .expect("turn latency lock poisoned");
-        *guard = Some(path);
+            .expect("turn latency writer lock poisoned");
+        *guard = Some(writer);
 
         Ok(())
     }
@@ -305,18 +293,6 @@ impl DebugLogger {
         if !self.enabled {
             return Ok(());
         }
-
-        let path = {
-            let guard = self
-                .turn_latency_file
-                .lock()
-                .expect("turn latency lock poisoned");
-            guard.clone()
-        };
-
-        let Some(path) = path else {
-            return Ok(());
-        };
 
         let payload_value = serde_json::to_value(payload).unwrap_or(Value::Null);
         let entry = match payload_value {
@@ -333,8 +309,15 @@ impl DebugLogger {
             }),
         };
 
-        let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
-        writeln!(file, "{}", serde_json::to_string(&entry)?)?;
+        let mut guard = self
+            .turn_latency_writer
+            .lock()
+            .expect("turn latency writer lock poisoned");
+        if let Some(ref mut writer) = *guard {
+            let line = serde_json::to_string(&entry)?;
+            writeln!(writer, "{}", line)?;
+            writer.flush()?;
+        }
         Ok(())
     }
 
@@ -346,8 +329,8 @@ impl DebugLogger {
                     continue;
                 }
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    if name == format!("{}_usage.json", session_id)
-                        || name.ends_with(&format!("_{}_usage.json", session_id))
+                    if name == format!("{}_usage.jsonl", session_id)
+                        || name.ends_with(&format!("_{}_usage.jsonl", session_id))
                     {
                         return Some(path);
                     }

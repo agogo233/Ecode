@@ -14,6 +14,9 @@ pub fn build_provider(
     config: &Config,
     service_version: &str,
 ) -> Result<Option<OtelProvider>, Box<dyn Error>> {
+    if !config.otel.analytics_enabled {
+        return Ok(None);
+    }
     let exporter = match &config.otel.exporter {
         Kind::None => OtelExporter::None,
         Kind::OtlpHttp {
