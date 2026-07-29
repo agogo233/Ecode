@@ -1759,12 +1759,14 @@ impl Config {
             auto_drive_observer_cadence: cfg.auto_drive_observer_cadence.unwrap_or(5),
             otel: {
                 let t: OtelConfigToml = cfg.otel.unwrap_or_default();
+                let analytics_enabled = t.analytics_enabled.unwrap_or(true);
                 let log_user_prompt = t.log_user_prompt.unwrap_or(false);
                 let environment = t
                     .environment
                     .unwrap_or(DEFAULT_OTEL_ENVIRONMENT.to_string());
                 let exporter = t.exporter.unwrap_or(OtelExporterKind::None);
                 OtelConfig {
+                    analytics_enabled,
                     log_user_prompt,
                     environment,
                     exporter,

@@ -533,6 +533,10 @@ async fn rollout_writer(
                         }
                     }
                 }
+                // Flush after batch to avoid per-item fsync pressure
+                if let Err(err) = writer.file.flush().await {
+                    warn!("failed to flush rollout file after AddItems: {err}");
+                }
 
                 if let Some(ref state) = catalog_state {
                     if let Err(err) = super::catalog::update_catalog_entry(
@@ -553,6 +557,8 @@ async fn rollout_writer(
                 }
             }
             RolloutCmd::Shutdown { ack } => {
+                // Final flush before shutdown
+                let _ = writer.file.flush().await;
                 let _ = ack.send(());
             }
         }
@@ -593,8 +599,6 @@ impl JsonlWriter {
     async fn write_line(&mut self, item: &impl serde::Serialize) -> std::io::Result<()> {
         let mut json = serde_json::to_string(item)?;
         json.push('\n');
-        self.file.write_all(json.as_bytes()).await?;
-        self.file.flush().await?;
-        Ok(())
+        self.file.write_all(json.as_bytes()).await
     }
 }

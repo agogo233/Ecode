@@ -133,6 +133,8 @@ pub enum OtelExporterKind {
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct OtelConfigToml {
+    #[serde(default)]
+    pub analytics_enabled: Option<bool>,
     pub log_user_prompt: Option<bool>,
     pub environment: Option<String>,
     pub exporter: Option<OtelExporterKind>,
@@ -140,6 +142,7 @@ pub struct OtelConfigToml {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct OtelConfig {
+    pub analytics_enabled: bool,
     pub log_user_prompt: bool,
     pub environment: String,
     pub exporter: OtelExporterKind,
@@ -148,6 +151,7 @@ pub struct OtelConfig {
 impl Default for OtelConfig {
     fn default() -> Self {
         OtelConfig {
+            analytics_enabled: true,
             log_user_prompt: false,
             environment: DEFAULT_OTEL_ENVIRONMENT.to_owned(),
             exporter: OtelExporterKind::None,
