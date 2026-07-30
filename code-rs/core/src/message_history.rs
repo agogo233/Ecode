@@ -17,6 +17,7 @@
 
 use std::fs::File;
 use std::fs::OpenOptions;
+use std::io::BufWriter;
 use std::io::Result;
 use std::io::Write;
 use std::path::PathBuf;
@@ -102,21 +103,23 @@ pub(crate) async fn append_entry(text: &str, session_id: &Uuid, config: &Config)
         options.mode(0o600);
     }
 
-    let mut history_file = options.open(&path)?;
+    let history_file = options.open(&path)?;
 
     // Ensure permissions.
     ensure_owner_only_permissions(&history_file).await?;
+
+    let mut writer = BufWriter::new(history_file);
 
     // Perform a blocking write under an advisory write lock using std::fs.
     tokio::task::spawn_blocking(move || -> Result<()> {
         // Retry a few times to avoid indefinite blocking when contended.
         for _ in 0..MAX_RETRIES {
-            match fs2::FileExt::try_lock_exclusive(&history_file) {
+            match fs2::FileExt::try_lock_exclusive(writer.get_ref()) {
                 Ok(()) => {
                     // While holding the exclusive lock, write the full line.
-                    history_file.write_all(line.as_bytes())?;
-                    history_file.flush()?;
-                    let _ = fs2::FileExt::unlock(&history_file);
+                    writer.write_all(line.as_bytes())?;
+                    writer.flush()?;
+                    let _ = fs2::FileExt::unlock(writer.get_ref());
                     return Ok(());
                 }
                 Err(e) => {

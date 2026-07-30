@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use uuid::Uuid;
 use std::fs::{self, OpenOptions};
-use std::io::Write as IoWrite;
+use std::io::{BufWriter, Write as IoWrite};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -749,7 +749,10 @@ impl AgentManager {
             .collect()
     }
 
-    fn append_agent_log(&self, log_tag: &str, line: &str) {
+    fn append_agent_log(&self, log_tag: &str, lines: &[impl AsRef<str>]) {
+        if lines.is_empty() {
+            return;
+        }
         let Some(root) = &self.debug_log_root else { return; };
         let dir = root.join(log_tag);
         if let Err(err) = fs::create_dir_all(&dir) {
@@ -759,9 +762,13 @@ impl AgentManager {
 
         let file = dir.join("progress.log");
         match OpenOptions::new().create(true).append(true).open(&file) {
-            Ok(mut fh) => {
-                if let Err(err) = writeln!(fh, "{}", line) {
-                    warn!("failed to write agent log {:?}: {}", file, err);
+            Ok(fh) => {
+                let mut writer = BufWriter::new(fh);
+                for line in lines {
+                    if let Err(err) = writeln!(writer, "{}", line.as_ref()) {
+                        warn!("failed to write agent log {:?}: {}", file, err);
+                        break;
+                    }
                 }
             }
             Err(err) => warn!("failed to open agent log {:?}: {}", file, err),
@@ -1207,9 +1214,7 @@ impl AgentManager {
             (log_tag, log_lines)
         }) {
             if let Some(tag) = log_tag {
-                for line in log_lines {
-                    self.append_agent_log(&tag, &line);
-                }
+                self.append_agent_log(&tag, &log_lines);
             }
             if updated {
                 self.finalize_terminal_agent(agent_id);
@@ -1261,7 +1266,7 @@ impl AgentManager {
                 );
             }
             if let Some(tag) = log_tag {
-                self.append_agent_log(&tag, &entry);
+                self.append_agent_log(&tag, &[&entry]);
             }
             // Send updated agent status with the latest progress
             self.send_agent_status_update().await;
