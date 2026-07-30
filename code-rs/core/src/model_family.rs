@@ -465,6 +465,13 @@ pub fn find_family_for_model(slug: &str) -> Option<ModelFamily> {
             max_output_tokens: Some(MAX_OUTPUT_DEFAULT),
             truncation_policy: TruncationPolicy::Bytes(10_000),
         )
+    } else if slug.starts_with("agnes") {
+        model_family!(
+            slug, slug,
+            context_window: Some(CONTEXT_WINDOW_200K),
+            max_output_tokens: Some(8_192),
+            truncation_policy: TruncationPolicy::Bytes(10_000),
+        )
     } else {
         None
     }
