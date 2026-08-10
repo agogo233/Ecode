@@ -79,7 +79,7 @@ jobs:
           cache-on-failure: true
 
       - name: Setup sccache (GHA backend)
-        uses: mozilla-actions/sccache-action@v0.0.9
+        uses: mozilla-actions/sccache-action@v0.0.11
         with:
           version: v0.10.0
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -220,7 +220,7 @@ jobs:
           cache-on-failure: true
 
       - name: Setup sccache (GHA backend)
-        uses: mozilla-actions/sccache-action@v0.0.9
+        uses: mozilla-actions/sccache-action@v0.0.11
         with:
           version: v0.10.0
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -357,7 +357,7 @@ jobs:
           cache-on-failure: true
 
       - name: Setup sccache (GHA backend)
-        uses: mozilla-actions/sccache-action@v0.0.9
+        uses: mozilla-actions/sccache-action@v0.0.11
         with:
           version: v0.10.0
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -493,7 +493,7 @@ jobs:
           cache-on-failure: true
 
       - name: Setup sccache (GHA backend)
-        uses: mozilla-actions/sccache-action@v0.0.9
+        uses: mozilla-actions/sccache-action@v0.0.11
         with:
           version: v0.10.0
           token: ${{ secrets.GITHUB_TOKEN }}
