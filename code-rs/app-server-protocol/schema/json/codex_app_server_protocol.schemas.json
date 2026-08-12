@@ -3438,6 +3438,12 @@
             "status": {
               "type": "string"
             },
+            "transparent_background": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
             "type": {
               "enum": [
                 "image_generation_end"
@@ -3815,6 +3821,7 @@
         {
           "properties": {
             "autoResolutionMs": {
+              "description": "@deprecated Use `isBlocking` to decide whether the request should block.",
               "format": "uint64",
               "minimum": 0.0,
               "type": [
@@ -3825,6 +3832,9 @@
             "call_id": {
               "description": "Responses API call id for the associated tool call, if available.",
               "type": "string"
+            },
+            "isBlocking": {
+              "type": "boolean"
             },
             "questions": {
               "items": {
@@ -3847,6 +3857,7 @@
           },
           "required": [
             "call_id",
+            "isBlocking",
             "questions",
             "type"
           ],
@@ -6465,6 +6476,7 @@
     },
     "McpAuthStatus": {
       "enum": [
+        "unknown",
         "unsupported",
         "not_logged_in",
         "bearer_token",
@@ -6919,9 +6931,14 @@
         "go",
         "plus",
         "pro",
+        "prolite",
         "team",
+        "self_serve_business_prolite",
+        "self_serve_business_usage_based",
         "business",
         "ent26",
+        "enterprise_cbp_automation",
+        "enterprise_cbp_usage_based",
         "enterprise",
         "edu",
         "unknown"
@@ -9869,12 +9886,17 @@
       "description": "EXPERIMENTAL. Params sent with a request_user_input event.",
       "properties": {
         "autoResolutionMs": {
+          "default": null,
+          "description": "@deprecated Use `isBlocking` to decide whether the request should block.",
           "format": "uint64",
           "minimum": 0.0,
           "type": [
             "integer",
             "null"
           ]
+        },
+        "isBlocking": {
+          "type": "boolean"
         },
         "itemId": {
           "type": "string"
@@ -9893,6 +9915,7 @@
         }
       },
       "required": [
+        "isBlocking",
         "itemId",
         "questions",
         "threadId",
@@ -10160,6 +10183,12 @@
             },
             "status": {
               "type": "string"
+            },
+            "transparent_background": {
+              "type": [
+                "boolean",
+                "null"
+              ]
             },
             "type": {
               "enum": [
@@ -10990,6 +11019,29 @@
             "type": "string"
           }
         ]
+      },
+      "AutoReviewRequirements": {
+        "properties": {
+          "ignoreRules": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "requiredOnModels": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
       },
       "ByteRange": {
         "properties": {
@@ -12015,6 +12067,16 @@
               "null"
             ]
           },
+          "autoReview": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/AutoReviewRequirements"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "enforceResidency": {
             "anyOf": [
               {
@@ -12560,6 +12622,13 @@
       "ExternalAgentConfigDetectResponse": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
+          "connectors": {
+            "default": [],
+            "items": {
+              "$ref": "#/definitions/v2/ExternalAgentDetectedConnectorCandidate"
+            },
+            "type": "array"
+          },
           "items": {
             "items": {
               "$ref": "#/definitions/v2/ExternalAgentConfigMigrationItem"
@@ -12622,6 +12691,34 @@
           "CONFIG",
           "SKILLS",
           "MCP_SERVER_CONFIG"
+        ],
+        "type": "string"
+      },
+      "ExternalAgentDetectedConnectorCandidate": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "sessionCount": {
+            "format": "uint32",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "source": {
+            "$ref": "#/definitions/v2/ExternalAgentDetectedConnectorSource"
+          }
+        },
+        "required": [
+          "name",
+          "sessionCount",
+          "source"
+        ],
+        "type": "object"
+      },
+      "ExternalAgentDetectedConnectorSource": {
+        "enum": [
+          "remoteMcpServersConfig",
+          "sessionToolUse"
         ],
         "type": "string"
       },
@@ -13268,6 +13365,7 @@
       },
       "McpAuthStatus": {
         "enum": [
+          "unknown",
           "unsupported",
           "notLoggedIn",
           "bearerToken",
@@ -13298,9 +13396,27 @@
         "title": "McpServerOauthLoginCompletedNotification",
         "type": "object"
       },
+      "McpServerOauthClientRegistration": {
+        "enum": [
+          "auto",
+          "dcr"
+        ],
+        "type": "string"
+      },
       "McpServerOauthLoginParams": {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "properties": {
+          "clientRegistration": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/McpServerOauthClientRegistration"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Registration strategy for this login only; omission preserves automatic DCR."
+          },
           "name": {
             "type": "string"
           },
@@ -13515,6 +13631,17 @@
           "model": {
             "type": "string"
           },
+          "multiAgentVersion": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/MultiAgentVersion"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Multi-agent runtime declared by this model, when available."
+          },
           "supportedReasoningEfforts": {
             "items": {
               "$ref": "#/definitions/v2/ReasoningEffortOption"
@@ -13646,6 +13773,15 @@
           "model"
         ],
         "type": "object"
+      },
+      "MultiAgentVersion": {
+        "description": "Multi-agent runtime supported by a model.",
+        "enum": [
+          "disabled",
+          "v1",
+          "v2"
+        ],
+        "type": "string"
       },
       "NetworkAccess": {
         "enum": [
@@ -13856,9 +13992,14 @@
           "go",
           "plus",
           "pro",
+          "prolite",
           "team",
+          "self_serve_business_prolite",
+          "self_serve_business_usage_based",
           "business",
           "ent26",
+          "enterprise_cbp_automation",
+          "enterprise_cbp_usage_based",
           "enterprise",
           "edu",
           "unknown"
@@ -16409,6 +16550,12 @@
               },
               "status": {
                 "type": "string"
+              },
+              "transparentBackground": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
               },
               "type": {
                 "enum": [

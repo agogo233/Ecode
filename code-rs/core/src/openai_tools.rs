@@ -17,12 +17,12 @@ use code_protocol::dynamic_tools::DynamicToolNamespaceSpec;
 use code_protocol::dynamic_tools::DynamicToolNamespaceTool;
 use code_protocol::dynamic_tools::DynamicToolSpec;
 use code_protocol::openai_models::WebSearchToolType;
-use code_protocol::request_user_input::MAX_AUTO_RESOLUTION_MS;
-use code_protocol::request_user_input::MIN_AUTO_RESOLUTION_MS;
 use crate::tool_apply_patch::{
-    create_apply_patch_freeform_tool, create_apply_patch_json_tool, ApplyPatchToolType,
+    ApplyPatchToolType, create_apply_patch_freeform_tool, create_apply_patch_json_tool,
 };
 // apply_patch tools are not currently surfaced; keep imports out to avoid warnings.
+
+const DEFAULT_FUNCTION_NAMESPACE: &str = "functions";
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ResponsesApiTool {
@@ -47,10 +47,16 @@ pub struct ResponsesApiNamespace {
 pub enum ResponsesApiNamespaceTool {
     #[serde(rename = "function")]
     Function(ResponsesApiTool),
+    #[serde(rename = "custom")]
+    Custom(FreeformTool),
 }
 
 fn default_namespace_description(namespace_name: &str) -> String {
-    format!("Tools in the {namespace_name} namespace.")
+    if namespace_name == DEFAULT_FUNCTION_NAMESPACE {
+        String::new()
+    } else {
+        format!("Tools in the {namespace_name} namespace.")
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -994,21 +1000,13 @@ fn create_request_user_input_tool() -> OpenAiTool {
         }),
     };
 
-    let auto_resolution_ms_schema = JsonSchema::Number {
-        description: Some(format!(
-            "Optional auto-resolution window in milliseconds, from {MIN_AUTO_RESOLUTION_MS} to {MAX_AUTO_RESOLUTION_MS}. Include this only when the question is useful but non-blocking and continuing with best judgment is acceptable if the user does not answer; omit it when explicit user input is required before continuing. Use {MIN_AUTO_RESOLUTION_MS} for lightly helpful context and up to {MAX_AUTO_RESOLUTION_MS} when the answer would materially unblock better work."
-        )),
-    };
-
     let mut properties = BTreeMap::new();
     properties.insert("questions".to_string(), questions_schema);
-    properties.insert("autoResolutionMs".to_string(), auto_resolution_ms_schema);
 
     OpenAiTool::Function(ResponsesApiTool {
         name: "request_user_input".to_string(),
-        description: format!(
-            "Request user input for one to three short questions and wait for the response. Set autoResolutionMs, from {MIN_AUTO_RESOLUTION_MS} to {MAX_AUTO_RESOLUTION_MS} milliseconds, only when the question is useful but non-blocking and continuing with best judgment is acceptable if the user does not answer; omit it when explicit user input is required."
-        ),
+        description: "Request user input for one to three short questions and wait for the response."
+            .to_string(),
         strict: false,
         parameters: JsonSchema::Object {
             properties,
@@ -1194,6 +1192,56 @@ pub fn create_tools_json_for_responses_api(
 
     Ok(tools_json)
 }
+
+pub fn create_tools_json_for_responses_lite(
+    tools: &[OpenAiTool],
+) -> crate::error::Result<Vec<serde_json::Value>> {
+    let mut functions = ResponsesApiNamespace {
+        name: DEFAULT_FUNCTION_NAMESPACE.to_string(),
+        description: default_namespace_description(DEFAULT_FUNCTION_NAMESPACE),
+        tools: Vec::new(),
+    };
+    let mut functions_index = None;
+    let mut tools_json = Vec::new();
+
+    for tool in tools {
+        match tool {
+            OpenAiTool::Function(tool) => {
+                functions
+                    .tools
+                    .push(ResponsesApiNamespaceTool::Function(tool.clone()));
+            }
+            OpenAiTool::Freeform(tool) => {
+                functions
+                    .tools
+                    .push(ResponsesApiNamespaceTool::Custom(tool.clone()));
+            }
+            OpenAiTool::Namespace(namespace) if namespace.name == DEFAULT_FUNCTION_NAMESPACE => {
+                if !namespace.description.trim().is_empty() {
+                    functions.description = namespace.description.clone();
+                }
+                functions.tools.extend(namespace.tools.clone());
+            }
+            tool => {
+                tools_json.push(serde_json::to_value(tool)?);
+                continue;
+            }
+        }
+        functions_index.get_or_insert(tools_json.len());
+    }
+
+    if let Some(functions_index) = functions_index
+        && !functions.tools.is_empty()
+    {
+        tools_json.insert(
+            functions_index,
+            serde_json::to_value(OpenAiTool::Namespace(functions))?,
+        );
+    }
+
+    Ok(tools_json)
+}
+
 /// Returns JSON values that are compatible with Function Calling in the
 /// Chat Completions API:
 /// https://platform.openai.com/docs/guides/function-calling?api-mode=chat

@@ -1248,6 +1248,12 @@
             "status": {
               "type": "string"
             },
+            "transparent_background": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
             "type": {
               "enum": [
                 "image_generation_end"
@@ -1625,6 +1631,7 @@
         {
           "properties": {
             "autoResolutionMs": {
+              "description": "@deprecated Use `isBlocking` to decide whether the request should block.",
               "format": "uint64",
               "minimum": 0.0,
               "type": [
@@ -1635,6 +1642,9 @@
             "call_id": {
               "description": "Responses API call id for the associated tool call, if available.",
               "type": "string"
+            },
+            "isBlocking": {
+              "type": "boolean"
             },
             "questions": {
               "items": {
@@ -1657,6 +1667,7 @@
           },
           "required": [
             "call_id",
+            "isBlocking",
             "questions",
             "type"
           ],
@@ -3357,6 +3368,7 @@
     },
     "McpAuthStatus": {
       "enum": [
+        "unknown",
         "unsupported",
         "not_logged_in",
         "bearer_token",
@@ -3700,9 +3712,14 @@
         "go",
         "plus",
         "pro",
+        "prolite",
         "team",
+        "self_serve_business_prolite",
+        "self_serve_business_usage_based",
         "business",
         "ent26",
+        "enterprise_cbp_automation",
+        "enterprise_cbp_usage_based",
         "enterprise",
         "edu",
         "unknown"
@@ -5457,6 +5474,12 @@
             },
             "status": {
               "type": "string"
+            },
+            "transparent_background": {
+              "type": [
+                "boolean",
+                "null"
+              ]
             },
             "type": {
               "enum": [
