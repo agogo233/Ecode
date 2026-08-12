@@ -7,6 +7,72 @@
 
 - (none)
 
+## [0.6.172] - 2026-08-10
+
+- Core: backport upstream shell environment parity for command execution. (66d98380)
+- Core: align apply_patch behavior with upstream patch handling. (66d98380)
+
+## [0.6.171] - 2026-08-09
+
+- Core: refresh upstream Codex history for parity with mainline updates. (31023043)
+- Core: align the codex-rs mirror with upstream/main. (69cdd9b7)
+
+## [0.6.170] - 2026-08-08
+
+- Core: align protocol, routing, and executor environment behavior with upstream parity. (1c2456c5, 1f76b0d8)
+- App Server: expose code-mode host gRPC protocol schemas and generated v2 response metadata. (8073dbb2, 1c2456c5)
+- Models: include image generation and model specialty metadata in protocol responses. (00910569, b12b3416, c5544178)
+- Core: persist theme tables safely when writing configuration. (35d00428)
+- Dependencies: update js-yaml to 4.3.1. (7d594248)
+
+## [0.6.169] - 2026-08-05
+
+- Core: disable storage for Responses Lite requests and preserve namespace tool serialization. (0724cfbf, 83fdc2e5, b87bf703)
+- Release: use Azure Key Vault for macOS notarization workflows. (0c07c7ee)
+- Release: add Fence auditing to the blob size workflow. (e1f39b5f)
+
+## [0.6.168] - 2026-08-04
+
+- MCP: canonicalize legacy session headers for conformance compatibility. (b0d6dca9)
+- Dependencies: remediate brace-expansion security alerts in package metadata. (22666e8f)
+
+## [0.6.166] - 2026-08-03
+
+- Core: backport upstream model message catalog parity for model instructions and plugin usage metadata. (1f31374)
+
+## [0.6.165] - 2026-08-02
+
+- Core: refresh upstream parity through the latest upstream/main merge. (b96c750a, 4bf479d)
+- Release: adopt remote workflow updates while preserving fork release metadata. (bdb36770)
+
+## [0.6.164] - 2026-08-01
+
+- Docs: document OmniRoute provider setup in the configuration guide. (48c8b41c, 8fbc8dab)
+- Release: refresh CLI package metadata for v0.6.164. (48c8b41c)
+
+## [0.6.162] - 2026-07-31
+
+- Release: refresh CLI package metadata for v0.6.162. (0f44eddf)
+- Release: keep npm package entries aligned for the published release. (0f44eddf)
+
+## [0.6.160] - 2026-07-30
+
+- Dependencies: patch npm security overrides to pick up fixed transitive packages. (4976a942)
+- Release: refresh package metadata and lockfile for the updated dependency overrides. (4976a942)
+
+## [0.6.158] - 2026-07-29
+
+- SDK: update the Python datamodel code generator metadata. (22a65760)
+- Release: refresh CLI and SDK package metadata for v0.6.158. (22a65760)
+
+## [0.6.156] - 2026-07-28
+
+- Core: refresh upstream parity for v0.6.156. (cbca1b32, bde3df6e)
+- SDK: update generated app-server protocol artifacts and client RPC coverage. (cbca1b32)
+- MCP: use configured HTTP clients for all OAuth requests. (709283b4)
+- Core: honor the configured SQLite home in log storage and centralize connection creation. (3418498f, 50a7328f)
+- Release: advance the latest alpha CLI channel only after publishing completes. (dd6b8803)
+
 ## [0.6.155] - 2026-07-27
 
 - Release: allow alpha hotfix versions in R2 release publishing. (3d519bf6)

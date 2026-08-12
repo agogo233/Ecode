@@ -27,6 +27,7 @@ use crate::auth_accounts;
 use crate::account_switching::RateLimitSwitchState;
 use crate::agent_tool::current_agent_spawn_depth;
 use crate::agent_tool::external_agent_command_exists;
+use crate::exec_env::inject_session_id_env;
 use crate::protocol::McpListToolsResponseEvent;
 use crate::protocol::TaskLifecycleEvent;
 use crate::protocol::TaskLifecyclePhase;
@@ -4927,6 +4928,7 @@ async fn handle_image_generation_call(
             status,
             revised_prompt,
             result,
+            transparent_background: None,
             saved_path,
         }),
         order,
@@ -5256,15 +5258,19 @@ fn parse_apply_patch_arguments(
     call_id: &str,
 ) -> Result<ExecParams, Box<ResponseInputItem>> {
     match parse_apply_patch_input(&arguments) {
-        Ok(input) => Ok(ExecParams {
-            command: vec!["apply_patch".to_string(), input],
-            shell_script: None,
-            cwd: sess.get_cwd().to_path_buf(),
-            timeout_ms: None,
-            env: HashMap::new(),
-            with_escalated_permissions: None,
-            justification: None,
-        }),
+        Ok(input) => {
+            let mut env = HashMap::new();
+            inject_session_id_env(&mut env, sess.id);
+            Ok(ExecParams {
+                command: vec!["apply_patch".to_string(), input],
+                shell_script: None,
+                cwd: sess.get_cwd().to_path_buf(),
+                timeout_ms: None,
+                env,
+                with_escalated_permissions: None,
+                justification: None,
+            })
+        }
         Err(err) => {
             let output = ResponseInputItem::FunctionCallOutput {
                 call_id: call_id.to_string(),
@@ -5285,12 +5291,14 @@ async fn handle_request_user_input(
     ctx: &ToolCallCtx,
     arguments: String,
 ) -> ResponseInputItem {
-    use code_protocol::request_user_input::RequestUserInputArgs;
     use code_protocol::request_user_input::RequestUserInputEvent;
-    use code_protocol::request_user_input::MAX_AUTO_RESOLUTION_MS;
-    use code_protocol::request_user_input::MIN_AUTO_RESOLUTION_MS;
 
-    let mut args: RequestUserInputArgs = match serde_json::from_str(&arguments) {
+    #[derive(serde::Deserialize)]
+    struct RequestUserInputToolArgs {
+        questions: Vec<code_protocol::request_user_input::RequestUserInputQuestion>,
+    }
+
+    let mut args: RequestUserInputToolArgs = match serde_json::from_str(&arguments) {
         Ok(args) => args,
         Err(err) => {
             return ResponseInputItem::FunctionCallOutput {
@@ -5327,18 +5335,6 @@ async fn handle_request_user_input(
     for question in &mut args.questions {
         question.is_other = true;
     }
-    if let Some(auto_resolution_ms) = args.auto_resolution_ms {
-        let clamped_auto_resolution_ms =
-            auto_resolution_ms.clamp(MIN_AUTO_RESOLUTION_MS, MAX_AUTO_RESOLUTION_MS);
-        if clamped_auto_resolution_ms != auto_resolution_ms {
-            tracing::warn!(
-                auto_resolution_ms,
-                clamped_auto_resolution_ms,
-                "clamped request_user_input autoResolutionMs to supported range"
-            );
-            args.auto_resolution_ms = Some(clamped_auto_resolution_ms);
-        }
-    }
 
     let rx_response = match sess.register_pending_user_input(ctx.sub_id.clone()) {
         Ok(rx) => rx,
@@ -5358,7 +5354,8 @@ async fn handle_request_user_input(
             call_id: ctx.call_id.clone(),
             turn_id: ctx.sub_id.clone(),
             questions: args.questions,
-            auto_resolution_ms: args.auto_resolution_ms,
+            is_blocking: true,
+            auto_resolution_ms: None,
         }),
     )
     .await;
@@ -8264,12 +8261,14 @@ fn to_exec_params(params: ShellToolCallParams, sess: &Session) -> ExecParams {
     let with_escalated_permissions = params
         .sandbox_permissions
         .and_then(|p| p.requires_escalated_permissions().then_some(true));
+    let mut env = create_env(&sess.shell_environment_policy);
+    inject_session_id_env(&mut env, sess.id);
     ExecParams {
         command: params.command,
         shell_script: None,
         cwd: sess.resolve_path(params.workdir.clone()),
         timeout_ms,
-        env: create_env(&sess.shell_environment_policy),
+        env,
         with_escalated_permissions,
         justification: params.justification,
     }
@@ -8281,6 +8280,8 @@ fn to_exec_params_from_shell_command(params: ShellCommandToolCallParams, sess: &
         .sandbox_permissions
         .and_then(|p| p.requires_escalated_permissions().then_some(true));
     let use_login_shell = params.login.unwrap_or(true);
+    let mut env = create_env(&sess.shell_environment_policy);
+    inject_session_id_env(&mut env, sess.id);
 
     ExecParams {
         command: vec![params.command.clone()],
@@ -8290,7 +8291,7 @@ fn to_exec_params_from_shell_command(params: ShellCommandToolCallParams, sess: &
         }),
         cwd: sess.resolve_path(params.workdir.clone()),
         timeout_ms,
-        env: create_env(&sess.shell_environment_policy),
+        env,
         with_escalated_permissions,
         justification: params.justification,
     }

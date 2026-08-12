@@ -455,6 +455,7 @@ mod tests {
             display_name: slug.to_string(),
             description: None,
             default_reasoning_level: None,
+            model_specialty: None,
             supported_reasoning_levels: Vec::new(),
             shell_type: ConfigShellToolType::Default,
             visibility: ModelVisibility::None,
@@ -468,6 +469,7 @@ mod tests {
             base_instructions: String::new(),
             model_messages: None,
             include_skills_usage_instructions: false,
+            include_plugin_usage_instructions: false,
             supports_reasoning_summaries: false,
             default_reasoning_summary: ReasoningSummary::Auto,
             support_verbosity: false,
@@ -488,6 +490,7 @@ mod tests {
             use_responses_lite: false,
             tool_mode: None,
             prefer_websockets: false,
+            multi_agent_version: None,
             used_fallback_model_metadata: false,
         }
     }

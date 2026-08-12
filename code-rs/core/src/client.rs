@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::AuthManager;
+use crate::CodexAuth;
 use crate::RefreshTokenError;
 use crate::account_usage;
 use crate::auth;
@@ -71,6 +72,7 @@ use crate::model_family::{find_family_for_model, ModelFamily};
 use crate::model_provider_info::ModelProviderInfo;
 use crate::model_provider_info::WireApi;
 use crate::openai_tools::create_tools_json_for_responses_api;
+use crate::openai_tools::create_tools_json_for_responses_lite;
 use crate::openai_tools::ConfigShellToolType;
 use crate::openai_tools::ToolsConfig;
 use crate::protocol::RateLimitSnapshotEvent;
@@ -107,6 +109,7 @@ fn preferred_ws_version_from_env() -> ResponsesWebsocketVersion {
 // be replayed on every subsequent request within the same turn (retries,
 // continuations, websocket reconnects).
 const X_CODEX_TURN_STATE_HEADER: &str = "x-codex-turn-state";
+const X_CODEX_ROUTING_HINT_HEADER: &str = "x-codex-routing-hint";
 const X_CODEX_WINDOW_ID_HEADER: &str = "x-codex-window-id";
 const X_OPENAI_INTERNAL_CODEX_RESPONSES_LITE_HEADER: &str =
     "x-openai-internal-codex-responses-lite";
@@ -215,10 +218,10 @@ fn is_quota_exceeded_http_error(status: StatusCode, error: &Error) -> bool {
 
 fn should_store_responses(
     prompt: &Prompt,
-    provider: &ModelProviderInfo,
+    _provider: &ModelProviderInfo,
     request_family: &ModelFamily,
 ) -> bool {
-    prompt.store || provider.is_azure_responses_endpoint() || request_family.use_responses_lite
+    !request_family.use_responses_lite && prompt.store
 }
 
 fn is_server_overloaded_error(error: &Error) -> bool {
@@ -434,6 +437,29 @@ impl ModelClient {
 
     fn current_window_id(&self, session_id: Uuid) -> String {
         format!("{session_id}:0")
+    }
+
+    fn build_routing_hint_header(
+        &self,
+        auth: Option<&CodexAuth>,
+        model: &str,
+        service_tier: Option<&str>,
+    ) -> Option<HeaderValue> {
+        if !auth.is_some_and(CodexAuth::uses_codex_backend)
+            || self.config.model_provider_id != "openai"
+            || !self.provider.requires_openai_auth
+            || self.provider.env_key.is_some()
+            || self.provider.experimental_bearer_token.is_some()
+            || self.provider.auth.is_some()
+        {
+            return None;
+        }
+
+        let routing_hint = match service_tier {
+            Some(tier) => format!("model={model};tier={tier}"),
+            None => format!("model={model}"),
+        };
+        HeaderValue::from_str(&routing_hint).ok()
     }
 
     fn responses_client_metadata(&self, session_id: Uuid) -> BTreeMap<String, String> {
@@ -731,7 +757,11 @@ impl ModelClient {
         let store = should_store_responses(prompt, &self.provider, &request_family);
 
         let full_instructions = prompt.get_full_instructions(&request_family);
-        let mut tools_json = create_tools_json_for_responses_api(&prompt.tools)?;
+        let mut tools_json = if request_family.use_responses_lite {
+            create_tools_json_for_responses_lite(&prompt.tools)?
+        } else {
+            create_tools_json_for_responses_api(&prompt.tools)?
+        };
         if matches!(effective_effort, ReasoningEffortConfig::Minimal) {
             tools_json.retain(|tool| {
                 tool.get("type")
@@ -820,6 +850,11 @@ impl ModelClient {
                 include.push("codex-lite".to_string());
             }
 
+            let service_tier = self
+                .config
+                .service_tier
+                .map(|service_tier| service_tier.request_value().to_string());
+
             let payload = ResponsesApiRequest {
                 model: model_slug,
                 instructions,
@@ -833,10 +868,7 @@ impl ModelClient {
                 store,
                 stream: true,
                 include,
-                service_tier: self
-                    .config
-                    .service_tier
-                    .map(|service_tier| service_tier.request_value().to_string()),
+                service_tier: service_tier.clone(),
                 prompt_cache_key: Some(session_id_str.clone()),
                 client_metadata: Some(self.responses_client_metadata(session_id)),
             };
@@ -844,9 +876,6 @@ impl ModelClient {
             let mut payload_json = serde_json::to_value(&payload)?;
             if let Some(model_value) = payload_json.get_mut("model") {
                 *model_value = serde_json::Value::String(model_slug.to_string());
-            }
-            if self.provider.is_azure_responses_endpoint() {
-                attach_item_ids(&mut payload_json, &input_with_instructions);
             }
             if let Some(openrouter_cfg) = self.provider.openrouter_config() {
                 if let Some(obj) = payload_json.as_object_mut() {
@@ -889,6 +918,11 @@ impl ModelClient {
                 )
                 .await?;
             req_builder = self.apply_requested_model_headers(req_builder, request_model);
+            if let Some(header_value) =
+                self.build_routing_hint_header(auth.as_ref(), request_model, service_tier.as_deref())
+            {
+                req_builder = req_builder.header(X_CODEX_ROUTING_HINT_HEADER, header_value);
+            }
 
             let has_beta_header = req_builder
                 .try_clone()
@@ -1214,7 +1248,11 @@ impl ModelClient {
         let store = should_store_responses(prompt, &self.provider, &request_family);
 
         let full_instructions = prompt.get_full_instructions(&request_family);
-        let mut tools_json = create_tools_json_for_responses_api(&prompt.tools)?;
+        let mut tools_json = if request_family.use_responses_lite {
+            create_tools_json_for_responses_lite(&prompt.tools)?
+        } else {
+            create_tools_json_for_responses_api(&prompt.tools)?
+        };
         if matches!(effective_effort, ReasoningEffortConfig::Minimal) {
             tools_json.retain(|tool| {
                 tool.get("type")
@@ -1285,15 +1323,6 @@ impl ModelClient {
             (_, None, None) => None,
         };
 
-        // In general, we want to explicitly send `store: false` when using the Responses API,
-        // but in practice, the Azure Responses API rejects `store: false`:
-        //
-        // - If store = false and id is sent an error is thrown that ID is not found
-        // - If store = false and id is not sent an error is thrown that ID is required
-        //
-        // For Azure, we send `store: true` and preserve reasoning item IDs.
-        let azure_workaround = self.provider.is_azure_responses_endpoint();
-
         let model_slug = request_model;
 
         let session_id = prompt
@@ -1330,6 +1359,11 @@ impl ModelClient {
 
             let text = text_template.clone();
 
+            let service_tier = self
+                .config
+                .service_tier
+                .map(|service_tier| service_tier.request_value().to_string());
+
             let payload = ResponsesApiRequest {
                 model: model_slug,
                 instructions,
@@ -1343,10 +1377,7 @@ impl ModelClient {
                 store,
                 stream: true,
                 include,
-                service_tier: self
-                    .config
-                    .service_tier
-                    .map(|service_tier| service_tier.request_value().to_string()),
+                service_tier: service_tier.clone(),
                 // Use a stable per-process cache key (session id). With store=false this is inert.
                 prompt_cache_key: Some(session_id_str.clone()),
                 client_metadata: Some(self.responses_client_metadata(session_id)),
@@ -1355,9 +1386,6 @@ impl ModelClient {
             let mut payload_json = serde_json::to_value(&payload)?;
             if let Some(model_value) = payload_json.get_mut("model") {
                 *model_value = serde_json::Value::String(model_slug.to_string());
-            }
-            if azure_workaround {
-                attach_item_ids(&mut payload_json, &input_with_instructions);
             }
             if let Some(openrouter_cfg) = self.provider.openrouter_config() {
                 if let Some(obj) = payload_json.as_object_mut() {
@@ -1394,6 +1422,11 @@ impl ModelClient {
                 .create_request_builder_with_auth(&self.client, &auth)
                 .await?;
             req_builder = self.apply_requested_model_headers(req_builder, request_model);
+            if let Some(header_value) =
+                self.build_routing_hint_header(auth.as_ref(), request_model, service_tier.as_deref())
+            {
+                req_builder = req_builder.header(X_CODEX_ROUTING_HINT_HEADER, header_value);
+            }
 
             let has_beta_header = req_builder
                 .try_clone()
@@ -2033,7 +2066,7 @@ impl ModelClient {
                 model: model_slug,
                 input: &prompt.input,
                 instructions: instructions.clone(),
-                service_tier,
+                service_tier: service_tier.clone(),
                 prompt_cache_key: Some(session_id_str.as_str()),
             };
             let payload_json = serde_json::to_value(&payload)?;
@@ -2042,6 +2075,11 @@ impl ModelClient {
                 .create_compact_request_builder_with_auth(&self.client, &auth)
                 .await?;
             request = self.apply_requested_model_headers(request, model_slug);
+            if let Some(header_value) =
+                self.build_routing_hint_header(auth.as_ref(), model_slug, service_tier.as_deref())
+            {
+                request = request.header(X_CODEX_ROUTING_HINT_HEADER, header_value);
+            }
 
             // Ensure Responses API beta header is present for compact calls. Mirror the
             // streaming path: use the public "responses=v1" header for the public OpenAI
@@ -2473,34 +2511,6 @@ struct ResponseCompletedInputTokensDetails {
 #[derive(Debug, Deserialize)]
 struct ResponseCompletedOutputTokensDetails {
     reasoning_tokens: u64,
-}
-
-fn attach_item_ids(payload_json: &mut Value, original_items: &[ResponseItem]) {
-    let Some(input_value) = payload_json.get_mut("input") else {
-        return;
-    };
-    let serde_json::Value::Array(items) = input_value else {
-        return;
-    };
-
-    for (value, item) in items.iter_mut().zip(original_items.iter()) {
-        let id = match item {
-            ResponseItem::AdditionalTools { id, .. }
-            | ResponseItem::Reasoning { id, .. }
-            | ResponseItem::Message { id, .. }
-            | ResponseItem::WebSearchCall { id, .. }
-            | ResponseItem::FunctionCall { id, .. }
-            | ResponseItem::LocalShellCall { id, .. }
-            | ResponseItem::CustomToolCall { id, .. } => id.as_deref(),
-            ResponseItem::ImageGenerationCall { id, .. } => Some(id.as_str()),
-            _ => None,
-        }
-        .filter(|id| !id.is_empty());
-
-        if let (Some(id), Some(obj)) = (id, value.as_object_mut()) {
-            obj.insert("id".to_string(), Value::String(id.to_string()));
-        }
-    }
 }
 
 fn prepare_response_items_for_request(input: &mut [ResponseItem]) {
@@ -3293,17 +3303,28 @@ mod tests {
     }
 
     #[test]
-    fn responses_storage_forces_store_for_required_providers() {
-        let prompt = Prompt::default();
+    fn responses_lite_disables_storage() {
+        let mut prompt = Prompt::default();
         let mut family = derive_default_model_family("gpt-test");
         let provider = responses_test_provider("openai", WireApi::Responses);
 
         family.use_responses_lite = true;
-        assert!(should_store_responses(&prompt, &provider, &family));
+        assert!(!should_store_responses(&prompt, &provider, &family));
 
-        family.use_responses_lite = false;
+        prompt.store = true;
+        assert!(!should_store_responses(&prompt, &provider, &family));
+    }
+
+    #[test]
+    fn responses_storage_is_not_forced_for_azure_provider() {
+        let prompt = Prompt::default();
+        let mut family = derive_default_model_family("gpt-test");
         let azure_provider = responses_test_provider("azure", WireApi::Responses);
-        assert!(should_store_responses(&prompt, &azure_provider, &family));
+
+        assert!(!should_store_responses(&prompt, &azure_provider, &family));
+
+        family.use_responses_lite = true;
+        assert!(!should_store_responses(&prompt, &azure_provider, &family));
     }
 
     #[test]

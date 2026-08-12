@@ -1,17 +1,17 @@
-## @just-every/code v0.6.155
+## @just-every/code v0.6.172
 
-This release improves release publishing support and refreshes upstream parity.
+This release backports upstream parity fixes for command execution and patch handling.
 
 ### Changes
 
-- Release: allow alpha hotfix versions in R2 release publishing.
-- Core: refresh upstream parity for v0.6.155.
+- Core: backport upstream shell environment parity for command execution.
+- Core: align apply_patch behavior with upstream patch handling.
 
 ### Install
 
-```
+```sh
 npm install -g @just-every/code@latest
 code
 ```
 
-Compare: https://github.com/just-every/code/compare/v0.6.154...v0.6.155
+Compare: https://github.com/just-every/code/compare/v0.6.171...v0.6.172
