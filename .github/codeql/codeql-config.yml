@@ -1,0 +1,6 @@
+name: "JustEvery CodeQL config"
+
+# `codex-rs` is a read-only mirror of upstream openai/codex. Analyze the
+# fork-authored Rust workspace under `code-rs` and other repository-owned code.
+paths-ignore:
+  - 'codex-rs/**'
