@@ -163,7 +163,7 @@ jobs:
           done
 
       - name: Upload artifacts (GNU)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: cloud-build-linux-x64-gnu
           path: artifacts/
@@ -300,7 +300,7 @@ jobs:
           done
 
       - name: Upload artifacts (MUSL)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: cloud-build-linux-x64-musl
           path: artifacts/
@@ -436,7 +436,7 @@ jobs:
           done
 
       - name: Upload artifacts (Win64)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: cloud-build-windows-x64-msvc
           path: artifacts/
@@ -555,7 +555,7 @@ jobs:
           done
 
       - name: Upload artifacts (Win64 GNU)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: cloud-build-windows-x64-gnu
           path: artifacts/
